@@ -9,35 +9,34 @@ from email import encoders
 from playwright.async_api import async_playwright
 import pandas as pd
 
-BRANDS = ['ADATA', 'XPG', 'KINGSTON', 'CRUCIAL', 'CORSAIR', 'LEXAR', 'G.SKILL', 'TEAMGROUP', 'BLACKBERRY', 'PNY']
+BRANDS = ['ADATA', 'XPG', 'KINGSTON', 'CRUCIAL', 'CORSAIR', 'LEXAR', 'G.SKILL', 'TEAMGROUP', 'BLACKBERRY', 'PNY', 'SAMSUNG', 'HYNIX', 'KLEVV', 'THERMALTAKE']
 
 def clean_and_parse_ram(raw_title: str, price_str: str, source: str) -> dict:
     title_upper = raw_title.upper()
     
-    # -------------------------------------------------------------
-    # 1. กรองเฉพาะ DDR4 หรือ DDR5 เท่านั้น (ถ้าไม่ใช่ ข้ามทันที)
-    # -------------------------------------------------------------
+    # 1. ระบุประเภท DDR
     ddr_match = re.search(r'DDR[45]', title_upper)
     if not ddr_match:
         return None
     ddr_type = ddr_match.group(0)
 
-    # -------------------------------------------------------------
-    # 2. จำแนก SO-DIMM และ U-DIMM (Desktop/Gaming)
-    # -------------------------------------------------------------
-    is_sodimm = any(k in title_upper for k in ['NB', 'NOTEBOOK', 'SO-DIMM', 'SODIMM', 'LAPTOP'])
-    is_udimm = any(k in title_upper for k in ['DESKTOP', 'DIMM', 'U-DIMM', 'UDIMM', 'RAM PC']) or not is_sodimm
-    
-    if is_sodimm:
-        form_factor = "SO-DIMM (Notebook)"
-    elif is_udimm:
-        form_factor = "U-DIMM (Desktop/Gaming)"
-    else:
-        return None  # ถ้าไม่เข้าพวกเลย ให้ข้าม
+    # 2. สกัด Bus Speed
+    bus_match = re.search(r'(?:BUS|\(|\/|-|\s)\s*(2133|2400|2666|2933|3200|3600|4800|5200|5600|6000|6200|6400|6600|6800|7200|7600|8000)\b', title_upper)
+    bus_speed = f"{bus_match.group(1)}MHz" if bus_match else "UNKNOWN"
 
     # -------------------------------------------------------------
-    # 3. สกัดราคาและคุณลักษณะอื่นๆ
+    # เงื่อนไขการกรอง:
+    # - DDR4: เอาเฉพาะ Bus 3200MHz เท่านั้น
+    # - DDR5: เอาทุก Bus Speed
     # -------------------------------------------------------------
+    if ddr_type == "DDR4" and bus_speed != "3200MHz":
+        return None
+
+    # 3. ระบุ Form Factor
+    is_sodimm = any(k in title_upper for k in ['NB', 'NOTEBOOK', 'SO-DIMM', 'SODIMM', 'LAPTOP'])
+    form_factor = "SO-DIMM (Notebook)" if is_sodimm else "U-DIMM (Desktop/Gaming)"
+
+    # 4. สกัดราคา
     clean_price = None
     if price_str:
         num_only = re.sub(r'[^\d.]', '', price_str)
@@ -46,19 +45,21 @@ def clean_and_parse_ram(raw_title: str, price_str: str, source: str) -> dict:
         except ValueError:
             clean_price = None
 
+    if not clean_price or clean_price <= 0:
+        return None
+
+    # 5. สกัด Brand
     brand_found = "OTHER"
     for b in BRANDS:
         if re.search(rf'\b{b}\b', title_upper):
             brand_found = b
             break
 
+    # 6. สกัด Capacity
     cap_match = re.search(r'(\d+)\s*GB', title_upper)
     capacity = f"{cap_match.group(1)}GB" if cap_match else "UNKNOWN"
 
-    bus_match = re.search(r'\b(2400|2666|3200|3600|4800|5200|5600|6000|6400|7200|7600|8000)\b', title_upper)
-    bus_speed = f"{bus_match.group(1)}MHz" if bus_match else "UNKNOWN"
-
-    # สกัด Part Number
+    # 7. สกัด Part Number
     part_number = "N/A"
     pn_match = re.search(r'\(([^)]+)\)', raw_title)
     if pn_match:
@@ -66,7 +67,7 @@ def clean_and_parse_ram(raw_title: str, price_str: str, source: str) -> dict:
     else:
         for token in raw_title.split():
             clean_t = token.strip('(),')
-            if re.match(r'^(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9\-/]{6,20}$', clean_t):
+            if re.match(r'^(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9\-/]{6,25}$', clean_t):
                 part_number = clean_t
                 break
 
@@ -84,61 +85,65 @@ def clean_and_parse_ram(raw_title: str, price_str: str, source: str) -> dict:
 
 async def scrape_advice(page) -> list:
     results = []
-    # หมวดหมู่ Advice: ครอบคลุมทั้ง SO-DIMM และ U-DIMM (PC/Gaming)
+    # หมวดหมู่ย่อยของ Advice แยกตาม DDR4 / DDR5
     urls = [
-        "https://www.advice.co.th/product/ram-for-pc",
-        "https://www.advice.co.th/product/ram-for-notebook"
+        "https://www.advice.co.th/product/ram-for-pc/ram-pc-ddr4-3200-",
+        "https://www.advice.co.th/product/ram-for-pc/ram-pc-ddr5",
+        "https://www.advice.co.th/product/ram-for-notebook/notebook-ddr4-3200-",
+        "https://www.advice.co.th/product/ram-for-notebook/notebook-ddr5"
     ]
     
     for url in urls:
         try:
             print(f"🌐 Scraping Advice: {url}")
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-            await page.wait_for_timeout(4000)
+            await page.wait_for_timeout(3000)
             
-            for _ in range(4):
-                await page.evaluate("window.scrollBy(0, 1200)")
-                await page.wait_for_timeout(1000)
+            # Scroll โหลด Lazy Load
+            for _ in range(5):
+                await page.evaluate("window.scrollBy(0, 1000)")
+                await page.wait_for_timeout(800)
 
-            items = await page.query_selector_all(".product-box, .product-list-item, div[class*='product']")
+            items = await page.query_selector_all(".product-box, .product-list-item, div[class*='product-card'], div[class*='product']")
             for item in items:
                 text_content = await item.inner_text()
                 lines = [line.strip() for line in text_content.split('\n') if line.strip()]
                 
                 name, price = None, None
                 for line in lines:
-                    if "RAM" in line.upper() and not name:
-                        name = line
-                    if ("฿" in line or "บาท" in line or re.search(r'^\d{3,5}$', line.replace(',', ''))) and not price:
+                    if ("RAM" in line.upper() or any(b in line.upper() for b in BRANDS)) and not name:
+                        if len(line) > 10:
+                            name = line
+                    if ("฿" in line or "บาท" in line or re.search(r'^\d{1,2},\d{3}$', line) or re.search(r'^\d{3,5}$', line)) and not price:
                         price = line
 
                 if name and price:
                     parsed = clean_and_parse_ram(name, price, "Advice")
-                    if parsed:  # จะถูกเพิ่มเฉพาะที่เป็น SO-DIMM/U-DIMM และ DDR4/DDR5
+                    if parsed:
                         results.append(parsed)
         except Exception as e:
             print(f"Advice Scraping Error on {url}: {e}")
             
-    print(f"✅ Advice Scraped Total: {len(results)} items (DDR4/DDR5 Only)")
+    print(f"✅ Advice Scraped Total: {len(results)} items")
     return results
 
 async def scrape_jib(page) -> list:
     results = []
-    # หมวดหมู่ JIB: ทั้ง PC Gaming และ Notebook
+    # หมวดหมู่ JIB ทั้ง PC และ Notebook RAM
     urls = [
-        "https://www.jib.co.th/web/product/product_list/3/1026", # Notebook RAM
-        "https://www.jib.co.th/web/product/product_list/3/1025"  # PC RAM
+        "https://www.jib.co.th/web/product/product_list/3/1025", # PC RAM
+        "https://www.jib.co.th/web/product/product_list/3/1026"  # Notebook RAM
     ]
     
     for url in urls:
         try:
             print(f"🌐 Scraping JIB: {url}")
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-            await page.wait_for_timeout(4000)
+            await page.wait_for_timeout(3000)
             
-            for _ in range(4):
-                await page.evaluate("window.scrollBy(0, 1200)")
-                await page.wait_for_timeout(1000)
+            for _ in range(5):
+                await page.evaluate("window.scrollBy(0, 1000)")
+                await page.wait_for_timeout(800)
 
             items = await page.query_selector_all(".div_product_item, .prod_list_box, div[class*='product']")
             for item in items:
@@ -147,8 +152,9 @@ async def scrape_jib(page) -> list:
                 
                 name, price = None, None
                 for line in lines:
-                    if any(b in line.upper() for b in BRANDS) and not name:
-                        name = line
+                    if ("RAM" in line.upper() or any(b in line.upper() for b in BRANDS)) and not name:
+                        if len(line) > 10:
+                            name = line
                     if ("บาท" in line or "฿" in line or re.search(r'^\d{1,2},\d{3}$', line)) and not price:
                         price = line
 
@@ -159,7 +165,7 @@ async def scrape_jib(page) -> list:
         except Exception as e:
             print(f"JIB Scraping Error on {url}: {e}")
             
-    print(f"✅ JIB Scraped Total: {len(results)} items (DDR4/DDR5 Only)")
+    print(f"✅ JIB Scraped Total: {len(results)} items")
     return results
 
 def send_email_with_excel(filepath, status_msg=""):
@@ -171,15 +177,14 @@ def send_email_with_excel(filepath, status_msg=""):
         print("❌ Missing secrets!")
         return
 
-    # แยกรายชื่ออีเมลด้วยเครื่องหมายคอมมา และลบช่องว่างส่วนเกิน
     receiver_list = [email.strip() for email in receiver_email_raw.split(',') if email.strip()]
 
     msg = MIMEMultipart()
     msg['From'] = sender_email
-    msg['To'] = ", ".join(receiver_list)  # แสดงรายชื่อผู้รับทั้งหมดในหัวข้อ To
-    msg['Subject'] = f"📊 รายงานเปรียบเทียบราคา RAM DDR4/DDR5 ({status_msg})"
+    msg['To'] = ", ".join(receiver_list)
+    msg['Subject'] = f"📊 รายงานเปรียบเทียบราคา RAM DDR4(Bus 3200) & DDR5 ({status_msg})"
 
-    body = f"สวัสดีครับ\n\nรายงานสรุปราคา RAM (SO-DIMM & U-DIMM DDR4/DDR5)\nสถานะ: {status_msg}\n\nดูรายละเอียดในไฟล์แนบได้เลยครับ"
+    body = f"สวัสดีครับ\n\nรายงานสรุปราคา RAM (DDR4 Bus 3200 เท่านั้น & DDR5 ทุก Bus)\nสถานะ: {status_msg}\n\nดูรายละเอียดในไฟล์แนบได้เลยครับ"
     msg.attach(MIMEText(body, 'plain'))
 
     if filepath and os.path.exists(filepath):
@@ -194,10 +199,9 @@ def send_email_with_excel(filepath, status_msg=""):
         server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
         server.login(sender_email, app_password)
-        # ส่งหาทุกคนในรายการ receiver_list
         server.sendmail(sender_email, receiver_list, msg.as_string())
         server.quit()
-        print(f"✉️ ส่ง Email สำเร็จไปยัง {len(receiver_list)} คน!")
+        print(f"✉️ ส่ง Email สำเร็จไปยัง {len(receiver_list)} รายชื่อ!")
     except Exception as e:
         print(f"❌ SMTP Error: {e}")
 
@@ -224,9 +228,8 @@ async def main():
         
         if all_data:
             df = pd.DataFrame(all_data)
-            df = df.dropna(subset=['Price'])
+            df = df.drop_duplicates(subset=['Source', 'Model_Raw', 'Price'])
             
-            # ทำ Pivot Table เปรียบเทียบราคา Advice vs JIB
             pivot_df = df.pivot_table(
                 index=['Form_Factor', 'DDR_Type', 'Capacity', 'Bus_Speed', 'Brand', 'Part_Number'],
                 columns='Source',
@@ -238,11 +241,11 @@ async def main():
                 df.to_excel(writer, sheet_name="Raw Cleaned", index=False)
                 pivot_df.to_excel(writer, sheet_name="Pivot Comparison", index=False)
 
-            status_msg = f"ดึงข้อมูล DDR4/DDR5 สำเร็จ {len(df)} รายการ"
+            status_msg = f"ดึงสำเร็จ {len(df)} รายการ (DDR4 3200MHz & DDR5 All)"
         else:
-            df_empty = pd.DataFrame([{"Message": "No DDR4/DDR5 data found"}])
+            df_empty = pd.DataFrame([{"Message": "No data found"}])
             df_empty.to_excel(file_name, index=False)
-            status_msg = "ไม่พบข้อมูล RAM DDR4/DDR5"
+            status_msg = "ไม่พบข้อมูล RAM"
 
         send_email_with_excel(file_name, status_msg)
 
