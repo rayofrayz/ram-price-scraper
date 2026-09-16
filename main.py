@@ -67,19 +67,32 @@ async def scrape_advice(page) -> list:
     results = []
     try:
         print("🌐 Scraping Advice...")
-        await page.goto("https://www.advice.co.th/product/ram-for-notebook/notebook-ddr4-3200-", wait_until="networkidle", timeout=60000)
-        await page.wait_for_timeout(3000)
+        # ใช้ URL หน้าหมวดหมู่ RAM โดยตรง
+        await page.goto("https://www.advice.co.th/product/ram-for-notebook", wait_until="domcontentloaded", timeout=60000)
+        await page.wait_for_timeout(5000)
         
-        # ดึงข้อความสินค้าแบบกว้างเพื่อเลี่ยงปัญหา Class เปลี่ยน
-        products = await page.query_selector_all(".product-list-item, .product-box, div[class*='product']")
-        for prod in products:
-            name_elem = await prod.query_selector(".product-name, .name, h3, a[title]")
-            price_elem = await prod.query_selector(".price, .price-online, div[class*='price']")
-            if name_elem and price_elem:
-                n_text = await name_elem.inner_text()
-                p_text = await price_elem.inner_text()
-                if n_text and p_text and "RAM" in n_text.upper():
-                    results.append(clean_and_parse_ram(n_text, p_text, "Advice"))
+        # เลื่อนหน้าจอเพื่อโหลด Lazy Load Images/Data
+        for _ in range(3):
+            await page.evaluate("window.scrollBy(0, 1000)")
+            await page.wait_for_timeout(1000)
+
+        # สกัดข้อมูลจากโครงสร้าง HTML ของ Advice
+        items = await page.query_selector_all(".product-box, .product-list-item, div[class*='product']")
+        for item in items:
+            text_content = await item.inner_text()
+            lines = [line.strip() for line in text_content.split('\n') if line.strip()]
+            
+            # ค้นหาบรรทัดที่มีข้อความ RAM และราคาบาท
+            name = None
+            price = None
+            for line in lines:
+                if "RAM" in line.upper() and not name:
+                    name = line
+                if ("฿" in line or "บาท" in line or re.search(r'^\d{3,5}$', line.replace(',', ''))) and not price:
+                    price = line
+
+            if name and price:
+                results.append(clean_and_parse_ram(name, price, "Advice"))
     except Exception as e:
         print(f"Advice Scraping Error: {e}")
     print(f"✅ Advice Scraped: {len(results)} items")
@@ -89,20 +102,28 @@ async def scrape_jib(page) -> list:
     results = []
     try:
         print("🌐 Scraping JIB...")
-        await page.goto("https://www.jib.co.th/web/product/product_list/3/1026", wait_until="networkidle", timeout=60000)
-        await page.wait_for_timeout(3000)
-        await page.evaluate("window.scrollBy(0, 1500)")
-        await page.wait_for_timeout(2000)
+        await page.goto("https://www.jib.co.th/web/product/product_list/3/1026", wait_until="domcontentloaded", timeout=60000)
+        await page.wait_for_timeout(5000)
         
-        products = await page.query_selector_all(".div_product_item, .prod_list_box, div[class*='product']")
-        for prod in products:
-            name_elem = await prod.query_selector(".title_product, .prod_name, div[class*='name']")
-            price_elem = await prod.query_selector(".price_total, .price_cart, div[class*='price']")
-            if name_elem and price_elem:
-                n_text = await name_elem.inner_text()
-                p_text = await price_elem.inner_text()
-                if n_text and p_text:
-                    results.append(clean_and_parse_ram(n_text, p_text, "JIB"))
+        for _ in range(3):
+            await page.evaluate("window.scrollBy(0, 1000)")
+            await page.wait_for_timeout(1000)
+
+        items = await page.query_selector_all(".div_product_item, .prod_list_box, div[class*='product']")
+        for item in items:
+            text_content = await item.inner_text()
+            lines = [line.strip() for line in text_content.split('\n') if line.strip()]
+            
+            name = None
+            price = None
+            for line in lines:
+                if any(b in line.upper() for b in BRANDS) and not name:
+                    name = line
+                if ("บาท" in line or "฿" in line or re.search(r'^\d{1,2},\d{3}$', line)) and not price:
+                    price = line
+
+            if name and price:
+                results.append(clean_and_parse_ram(name, price, "JIB"))
     except Exception as e:
         print(f"JIB Scraping Error: {e}")
     print(f"✅ JIB Scraped: {len(results)} items")
@@ -113,18 +134,16 @@ def send_email_with_excel(filepath, status_msg=""):
     app_password = os.environ.get("GMAIL_APP_PASSWORD")
     receiver_email = os.environ.get("RECEIVER_EMAIL")
 
-    print(f"📧 Attempting to send email from {sender_email} to {receiver_email}...")
-
     if not sender_email or not app_password or not receiver_email:
-        print("❌ CRITICAL ERROR: Environment variables (Secrets) are missing!")
+        print("❌ Environment variables missing!")
         return
 
     msg = MIMEMultipart()
     msg['From'] = sender_email
     msg['To'] = receiver_email
-    msg['Subject'] = "📊 รายงานเปรียบเทียบราคา RAM ประจำวัน (Advice vs JIB)"
+    msg['Subject'] = f"📊 รายงานเปรียบเทียบราคา RAM ประจำวัน ({status_msg})"
 
-    body = f"สวัสดีครับ\n\nรายงานสรุปราคา RAM ประจำวัน\n{status_msg}\n\nดูรายละเอียดในไฟล์แนบได้เลยครับ"
+    body = f"สวัสดีครับ\n\nรายงานสรุปราคา RAM ประจำวัน\nสถานะ: {status_msg}\n\nดูรายละเอียดในไฟล์แนบได้เลยครับ"
     msg.attach(MIMEText(body, 'plain'))
 
     if filepath and os.path.exists(filepath):
@@ -141,18 +160,30 @@ def send_email_with_excel(filepath, status_msg=""):
         server.login(sender_email, app_password)
         server.send_message(msg)
         server.quit()
-        print("✉️ ส่ง Email สำเร็จเรียบร้อย!")
+        print("✉️ ส่ง Email สำเร็จ!")
     except Exception as e:
-        print(f"❌ ส่ง Email ไม่สำเร็จเนื่องจาก SMTP Error: {e}")
+        print(f"❌ SMTP Error: {e}")
 
 async def main():
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
+        # เปิด เบราว์เซอร์ พร้อมเทคนิค Bypass Anti-Bot
+        browser = await p.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-blink-features=AutomationControlled"
+            ]
+        )
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            viewport={"width": 1440, "height": 900}
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+            viewport={"width": 1920, "height": 1080},
+            locale="th-TH"
         )
         page = await context.new_page()
+        
+        # ปลอมตัวไม่ให้เว็บรู้ว่าเป็น Playwright/Automation
+        await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
         advice_data = await scrape_advice(page)
         jib_data = await scrape_jib(page)
@@ -164,6 +195,7 @@ async def main():
         if all_data:
             df = pd.DataFrame(all_data)
             df = df.dropna(subset=['Price'])
+            
             pivot_df = df.pivot_table(
                 index=['Form_Factor', 'DDR_Type', 'Capacity', 'Bus_Speed', 'Brand', 'Part_Number'],
                 columns='Source',
@@ -177,10 +209,9 @@ async def main():
 
             status_msg = f"ดึงข้อมูลสำเร็จทั้งหมด {len(df)} รายการ"
         else:
-            # กรณีดึงไม่ได้ ให้สร้างไฟล์เปล่าส่งไปก่อนเพื่อทดสอบระบบ Email
             df_empty = pd.DataFrame([{"Message": "No data scraped today"}])
             df_empty.to_excel(file_name, index=False)
-            status_msg = "⚠️ วันนี้ไม่สามารถสกัดข้อมูลจากเว็บคู่แข่งได้ (หน้าเว็บอาจมีการปรับเปลี่ยน)"
+            status_msg = "ไม่สามารถสกัดข้อมูลได้ (ถูก Anti-Bot บล็อก)"
 
         send_email_with_excel(file_name, status_msg)
 
