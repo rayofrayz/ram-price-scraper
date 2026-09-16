@@ -2,6 +2,7 @@ import asyncio
 import os
 import re
 import smtplib
+import json
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
@@ -9,7 +10,7 @@ from email import encoders
 from playwright.async_api import async_playwright
 import pandas as pd
 
-BRANDS = ['ADATA', 'XPG', 'KINGSTON', 'CRUCIAL', 'CORSAIR', 'LEXAR', 'G.SKILL', 'TEAMGROUP', 'BLACKBERRY', 'PNY', 'SAMSUNG', 'HYNIX', 'KLEVV', 'THERMALTAKE', 'COLORFUL', 'HIKVISION', 'HIKSEMI', 'APACER']
+BRANDS = ['ADATA', 'XPG', 'KINGSTON', 'CRUCIAL', 'CORSAIR', 'LEXAR', 'G.SKILL', 'TEAMGROUP', 'BLACKBERRY', 'PNY', 'SAMSUNG', 'HYNIX', 'KLEVV', 'THERMALTAKE', 'COLORFUL', 'HIKVISION', 'HIKSEMI', 'APACER', 'GALAX']
 
 def clean_and_parse_ram(raw_title: str, price_val, source: str) -> dict:
     title_upper = raw_title.upper()
@@ -86,45 +87,50 @@ def clean_and_parse_ram(raw_title: str, price_val, source: str) -> dict:
 
 async def scrape_advice(page) -> list:
     results = []
-    # หมวดหมู่ RAM ของ Advice (PC DDR4 3200, PC DDR5, NB DDR4 3200, NB DDR5)
-    urls = [
-        "https://www.advice.co.th/product/ram-for-pc/ram-pc-ddr4-3200-",
-        "https://www.advice.co.th/product/ram-for-pc/ram-pc-ddr5",
-        "https://www.advice.co.th/product/ram-for-notebook/notebook-ddr4-3200-",
-        "https://www.advice.co.th/product/ram-for-notebook/notebook-ddr5"
+    # หมวดหมู่ของ Advice ทั้งหมด (PC RAM & Notebook RAM)
+    categories = [
+        {"name": "PC RAM", "url": "https://www.advice.co.th/product/ram-for-pc"},
+        {"name": "Notebook RAM", "url": "https://www.advice.co.th/product/ram-for-notebook"}
     ]
     
-    for url in urls:
+    for cat in categories:
         try:
-            print(f"🌐 Scraping Advice: {url}")
-            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-            await page.wait_for_timeout(4000)
+            print(f"🌐 Scraping Advice ({cat['name']}): {cat['url']}")
+            await page.goto(cat['url'], wait_until="domcontentloaded", timeout=60000)
+            await page.wait_for_timeout(3000)
             
-            # เลื่อนลงเพื่อให้หน้าเว็บโหลดLazy Load สินค้าทั้งหมด
-            for _ in range(6):
-                await page.evaluate("window.scrollBy(0, 1500)")
-                await page.wait_for_timeout(800)
+            # วนลูปเลื่อนลงกดปุ่ม 'ดูเพิ่มเติม' หรือดึงกล่องสินค้าทั้งหมดในหน้า
+            for page_num in range(1, 15):
+                # สกัดสินค้าจากกล่อง HTML
+                items = await page.query_selector_all(".product-box, .product-list-item, div[class*='product']")
+                for item in items:
+                    text_content = await item.inner_text()
+                    lines = [line.strip() for line in text_content.split('\n') if line.strip()]
+                    
+                    name, price = None, None
+                    for line in lines:
+                        if ("RAM" in line.upper() or "DDR" in line.upper() or any(b in line.upper() for b in BRANDS)) and not name:
+                            if len(line) > 6 and ("DDR" in line.upper() or "RAM" in line.upper()):
+                                name = line
+                        if ("฿" in line or "บาท" in line or re.search(r'^\d{1,2},\d{3}$', line) or re.search(r'^\d{3,5}$', line)) and not price:
+                            price = line
 
-            items = await page.query_selector_all(".product-box, .product-list-item, div[class*='product']")
-            
-            for item in items:
-                text_content = await item.inner_text()
-                lines = [line.strip() for line in text_content.split('\n') if line.strip()]
+                    if name and price:
+                        parsed = clean_and_parse_ram(name, price, "Advice")
+                        if parsed:
+                            results.append(parsed)
                 
-                name, price = None, None
-                for line in lines:
-                    if ("RAM" in line.upper() or any(b in line.upper() for b in BRANDS)) and not name:
-                        if len(line) > 6:
-                            name = line
-                    if ("฿" in line or "บาท" in line or re.search(r'^\d{1,2},\d{3}$', line) or re.search(r'^\d{3,5}$', line)) and not price:
-                        price = line
+                # พยายามกดปุ่มดูเพิ่มเติม (Load More) หากมี
+                load_more_btn = await page.query_selector("button:has-text('ดูเพิ่มเติม'), .btn-loadmore, a[class*='loadmore']")
+                if load_more_btn and await load_more_btn.is_visible():
+                    await load_more_btn.click()
+                    await page.wait_for_timeout(2000)
+                else:
+                    await page.evaluate("window.scrollBy(0, 2000)")
+                    await page.wait_for_timeout(1500)
 
-                if name and price:
-                    parsed = clean_and_parse_ram(name, price, "Advice")
-                    if parsed:
-                        results.append(parsed)
         except Exception as e:
-            print(f"Advice Scraping Error on {url}: {e}")
+            print(f"Advice Scraping Error on {cat['name']}: {e}")
             
     print(f"✅ Advice Total Filtered: {len(results)} items")
     return results
@@ -145,7 +151,7 @@ def send_email_with_excel(filepath, status_msg=""):
     msg['To'] = ", ".join(receiver_list)
     msg['Subject'] = f"📊 รายงานราคา RAM Advice - DDR4(Bus 3200) & DDR5 ({status_msg})"
 
-    body = f"สวัสดีครับ\n\nรายงานสรุปราคา RAM จาก Advice (DDR4 Bus 3200 & DDR5 All)\nสถานะ: {status_msg}\n\nดูรายละเอียดในไฟล์แนบได้เลยครับ"
+    body = f"สวัสดีครับ\n\nรายงานสรุปราคา RAM จาก Advice (เงื่อนไข: DDR4 Bus 3200 & DDR5 ทุก Bus)\nสถานะ: {status_msg}\n\nดูรายละเอียดในไฟล์แนบได้เลยครับ"
     msg.attach(MIMEText(body, 'plain'))
 
     if filepath and os.path.exists(filepath):
@@ -180,7 +186,6 @@ async def main():
         page = await context.new_page()
         await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
-        # สแครปเฉพาะ Advice เท่านั้น
         advice_data = await scrape_advice(page)
         await browser.close()
 
@@ -200,7 +205,7 @@ async def main():
                 df.to_excel(writer, sheet_name="Raw Cleaned", index=False)
                 summary_df.to_excel(writer, sheet_name="Summary Price", index=False)
 
-            status_msg = f"ดึง Advice สำเร็จ {len(df)} รายการ"
+            status_msg = f"ดึงสำเร็จ {len(df)} รายการ (DDR4 3200 & DDR5)"
         else:
             df_empty = pd.DataFrame([{"Message": "No RAM matching criteria found"}])
             df_empty.to_excel(file_name, index=False)
