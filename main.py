@@ -9,7 +9,7 @@ from email import encoders
 from playwright.async_api import async_playwright
 import pandas as pd
 
-BRANDS = ['ADATA', 'XPG', 'KINGSTON', 'CRUCIAL', 'CORSAIR', 'LEXAR', 'G.SKILL', 'TEAMGROUP', 'BLACKBERRY', 'PNY', 'SAMSUNG', 'HYNIX', 'KLEVV', 'THERMALTAKE']
+BRANDS = ['ADATA', 'XPG', 'KINGSTON', 'CRUCIAL', 'CORSAIR', 'LEXAR', 'G.SKILL', 'TEAMGROUP', 'BLACKBERRY', 'PNY', 'SAMSUNG', 'HYNIX', 'KLEVV', 'THERMALTAKE', 'COLORFUL', 'HIKVISION', 'HIKSEMI', 'APACER']
 
 def clean_and_parse_ram(raw_title: str, price_val, source: str) -> dict:
     title_upper = raw_title.upper()
@@ -21,7 +21,7 @@ def clean_and_parse_ram(raw_title: str, price_val, source: str) -> dict:
     elif 'DDR4' in title_upper:
         ddr_type = 'DDR4'
     else:
-        return None  # ข้ามรุ่นอื่น
+        return None
 
     # 2. สกัด Bus Speed
     bus_match = re.search(r'\b(2133|2400|2666|2933|3200|3600|4800|5200|5600|6000|6200|6400|6600|6800|7200|7600|8000)\b', title_upper)
@@ -29,12 +29,11 @@ def clean_and_parse_ram(raw_title: str, price_val, source: str) -> dict:
 
     # -------------------------------------------------------------
     # เงื่อนไขการกรอง:
-    # - DDR4: เอา Bus 3200MHz หรือรุ่นที่ไม่ระบุ Bus ในชื่อ (เผื่อเป็น 3200)
-    #   แต่อนุญาตตัดเฉพาะ 2133, 2400, 2666 ออกชัดเจน
-    # - DDR5: เอาทุกตัว
+    # - DDR4: เอาเฉพาะ Bus 3200MHz เท่านั้น
+    # - DDR5: เอาทุก Bus Speed
     # -------------------------------------------------------------
     if ddr_type == "DDR4":
-        if bus_speed in ["2133MHz", "2400MHz", "2666MHz", "2933MHz"]:
+        if bus_speed != "3200MHz" and bus_speed != "UNKNOWN":
             return None
 
     # 3. ระบุ Form Factor (Notebook vs Desktop/Gaming)
@@ -87,23 +86,26 @@ def clean_and_parse_ram(raw_title: str, price_val, source: str) -> dict:
 
 async def scrape_advice(page) -> list:
     results = []
+    # หมวดหมู่ RAM ของ Advice (PC DDR4 3200, PC DDR5, NB DDR4 3200, NB DDR5)
     urls = [
-        "https://www.advice.co.th/product/ram-for-pc",
-        "https://www.advice.co.th/product/ram-for-notebook"
+        "https://www.advice.co.th/product/ram-for-pc/ram-pc-ddr4-3200-",
+        "https://www.advice.co.th/product/ram-for-pc/ram-pc-ddr5",
+        "https://www.advice.co.th/product/ram-for-notebook/notebook-ddr4-3200-",
+        "https://www.advice.co.th/product/ram-for-notebook/notebook-ddr5"
     ]
     
     for url in urls:
         try:
             print(f"🌐 Scraping Advice: {url}")
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-            await page.wait_for_timeout(3000)
+            await page.wait_for_timeout(4000)
             
-            for _ in range(5):
-                await page.evaluate("window.scrollBy(0, 1200)")
+            # เลื่อนลงเพื่อให้หน้าเว็บโหลดLazy Load สินค้าทั้งหมด
+            for _ in range(6):
+                await page.evaluate("window.scrollBy(0, 1500)")
                 await page.wait_for_timeout(800)
 
             items = await page.query_selector_all(".product-box, .product-list-item, div[class*='product']")
-            print(f"Advice items found: {len(items)}")
             
             for item in items:
                 text_content = await item.inner_text()
@@ -127,48 +129,6 @@ async def scrape_advice(page) -> list:
     print(f"✅ Advice Total Filtered: {len(results)} items")
     return results
 
-async def scrape_jib(page) -> list:
-    results = []
-    urls = [
-        "https://www.jib.co.th/web/product/product_list/3/1025",
-        "https://www.jib.co.th/web/product/product_list/3/1026"
-    ]
-    
-    for url in urls:
-        try:
-            print(f"🌐 Scraping JIB: {url}")
-            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-            await page.wait_for_timeout(3000)
-            
-            for _ in range(5):
-                await page.evaluate("window.scrollBy(0, 1200)")
-                await page.wait_for_timeout(800)
-
-            items = await page.query_selector_all(".div_product_item, .prod_list_box, div[class*='product']")
-            print(f"JIB items found: {len(items)}")
-            
-            for item in items:
-                text_content = await item.inner_text()
-                lines = [line.strip() for line in text_content.split('\n') if line.strip()]
-                
-                name, price = None, None
-                for line in lines:
-                    if ("RAM" in line.upper() or any(b in line.upper() for b in BRANDS)) and not name:
-                        if len(line) > 6:
-                            name = line
-                    if ("บาท" in line or "฿" in line or re.search(r'^\d{1,2},\d{3}$', line)) and not price:
-                        price = line
-
-                if name and price:
-                    parsed = clean_and_parse_ram(name, price, "JIB")
-                    if parsed:
-                        results.append(parsed)
-        except Exception as e:
-            print(f"JIB Scraping Error on {url}: {e}")
-            
-    print(f"✅ JIB Total Filtered: {len(results)} items")
-    return results
-
 def send_email_with_excel(filepath, status_msg=""):
     sender_email = os.environ.get("SENDER_EMAIL")
     app_password = os.environ.get("GMAIL_APP_PASSWORD")
@@ -183,9 +143,9 @@ def send_email_with_excel(filepath, status_msg=""):
     msg = MIMEMultipart()
     msg['From'] = sender_email
     msg['To'] = ", ".join(receiver_list)
-    msg['Subject'] = f"📊 รายงานเปรียบเทียบราคา RAM DDR4/DDR5 ({status_msg})"
+    msg['Subject'] = f"📊 รายงานราคา RAM Advice - DDR4(Bus 3200) & DDR5 ({status_msg})"
 
-    body = f"สวัสดีครับ\n\nรายงานสรุปราคา RAM (DDR4 & DDR5)\nสถานะ: {status_msg}\n\nดูรายละเอียดในไฟล์แนบได้เลยครับ"
+    body = f"สวัสดีครับ\n\nรายงานสรุปราคา RAM จาก Advice (DDR4 Bus 3200 & DDR5 All)\nสถานะ: {status_msg}\n\nดูรายละเอียดในไฟล์แนบได้เลยครับ"
     msg.attach(MIMEText(body, 'plain'))
 
     if filepath and os.path.exists(filepath):
@@ -220,29 +180,27 @@ async def main():
         page = await context.new_page()
         await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
+        # สแครปเฉพาะ Advice เท่านั้น
         advice_data = await scrape_advice(page)
-        jib_data = await scrape_jib(page)
         await browser.close()
 
-        all_data = advice_data + jib_data
-        file_name = "RAM_Competitor_Prices.xlsx"
+        file_name = "RAM_Advice_Prices.xlsx"
         
-        if all_data:
-            df = pd.DataFrame(all_data)
+        if advice_data:
+            df = pd.DataFrame(advice_data)
             df = df.drop_duplicates(subset=['Source', 'Model_Raw', 'Price'])
             
-            pivot_df = df.pivot_table(
+            summary_df = df.pivot_table(
                 index=['Form_Factor', 'DDR_Type', 'Capacity', 'Bus_Speed', 'Brand', 'Part_Number'],
-                columns='Source',
                 values='Price',
                 aggfunc='min'
             ).reset_index()
 
             with pd.ExcelWriter(file_name, engine='openpyxl') as writer:
                 df.to_excel(writer, sheet_name="Raw Cleaned", index=False)
-                pivot_df.to_excel(writer, sheet_name="Pivot Comparison", index=False)
+                summary_df.to_excel(writer, sheet_name="Summary Price", index=False)
 
-            status_msg = f"ดึงสำเร็จ {len(df)} รายการ"
+            status_msg = f"ดึง Advice สำเร็จ {len(df)} รายการ"
         else:
             df_empty = pd.DataFrame([{"Message": "No RAM matching criteria found"}])
             df_empty.to_excel(file_name, index=False)
