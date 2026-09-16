@@ -13,6 +13,31 @@ BRANDS = ['ADATA', 'XPG', 'KINGSTON', 'CRUCIAL', 'CORSAIR', 'LEXAR', 'G.SKILL', 
 
 def clean_and_parse_ram(raw_title: str, price_str: str, source: str) -> dict:
     title_upper = raw_title.upper()
+    
+    # -------------------------------------------------------------
+    # 1. กรองเฉพาะ DDR4 หรือ DDR5 เท่านั้น (ถ้าไม่ใช่ ข้ามทันที)
+    # -------------------------------------------------------------
+    ddr_match = re.search(r'DDR[45]', title_upper)
+    if not ddr_match:
+        return None
+    ddr_type = ddr_match.group(0)
+
+    # -------------------------------------------------------------
+    # 2. จำแนก SO-DIMM และ U-DIMM (Desktop/Gaming)
+    # -------------------------------------------------------------
+    is_sodimm = any(k in title_upper for k in ['NB', 'NOTEBOOK', 'SO-DIMM', 'SODIMM', 'LAPTOP'])
+    is_udimm = any(k in title_upper for k in ['DESKTOP', 'DIMM', 'U-DIMM', 'UDIMM', 'RAM PC']) or not is_sodimm
+    
+    if is_sodimm:
+        form_factor = "SO-DIMM (Notebook)"
+    elif is_udimm:
+        form_factor = "U-DIMM (Desktop/Gaming)"
+    else:
+        return None  # ถ้าไม่เข้าพวกเลย ให้ข้าม
+
+    # -------------------------------------------------------------
+    # 3. สกัดราคาและคุณลักษณะอื่นๆ
+    # -------------------------------------------------------------
     clean_price = None
     if price_str:
         num_only = re.sub(r'[^\d.]', '', price_str)
@@ -26,20 +51,14 @@ def clean_and_parse_ram(raw_title: str, price_str: str, source: str) -> dict:
         if re.search(rf'\b{b}\b', title_upper):
             brand_found = b
             break
-            
-    form_factor = "Desktop (DIMM)"
-    if any(k in title_upper for k in ['NB', 'NOTEBOOK', 'SO-DIMM', 'SODIMM', 'LAPTOP']):
-        form_factor = "Notebook (SO-DIMM)"
-
-    ddr_match = re.search(r'DDR[345]', title_upper)
-    ddr_type = ddr_match.group(0) if ddr_match else "UNKNOWN"
 
     cap_match = re.search(r'(\d+)\s*GB', title_upper)
     capacity = f"{cap_match.group(1)}GB" if cap_match else "UNKNOWN"
 
-    bus_match = re.search(r'\b(2400|2666|3200|3600|4800|5200|5600|6000|6400|7200)\b', title_upper)
+    bus_match = re.search(r'\b(2400|2666|3200|3600|4800|5200|5600|6000|6400|7200|7600|8000)\b', title_upper)
     bus_speed = f"{bus_match.group(1)}MHz" if bus_match else "UNKNOWN"
 
+    # สกัด Part Number
     part_number = "N/A"
     pn_match = re.search(r'\(([^)]+)\)', raw_title)
     if pn_match:
@@ -65,68 +84,82 @@ def clean_and_parse_ram(raw_title: str, price_str: str, source: str) -> dict:
 
 async def scrape_advice(page) -> list:
     results = []
-    try:
-        print("🌐 Scraping Advice...")
-        # ใช้ URL หน้าหมวดหมู่ RAM โดยตรง
-        await page.goto("https://www.advice.co.th/product/ram-for-notebook", wait_until="domcontentloaded", timeout=60000)
-        await page.wait_for_timeout(5000)
-        
-        # เลื่อนหน้าจอเพื่อโหลด Lazy Load Images/Data
-        for _ in range(3):
-            await page.evaluate("window.scrollBy(0, 1000)")
-            await page.wait_for_timeout(1000)
-
-        # สกัดข้อมูลจากโครงสร้าง HTML ของ Advice
-        items = await page.query_selector_all(".product-box, .product-list-item, div[class*='product']")
-        for item in items:
-            text_content = await item.inner_text()
-            lines = [line.strip() for line in text_content.split('\n') if line.strip()]
+    # หมวดหมู่ Advice: ครอบคลุมทั้ง SO-DIMM และ U-DIMM (PC/Gaming)
+    urls = [
+        "https://www.advice.co.th/product/ram-for-pc",
+        "https://www.advice.co.th/product/ram-for-notebook"
+    ]
+    
+    for url in urls:
+        try:
+            print(f"🌐 Scraping Advice: {url}")
+            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            await page.wait_for_timeout(4000)
             
-            # ค้นหาบรรทัดที่มีข้อความ RAM และราคาบาท
-            name = None
-            price = None
-            for line in lines:
-                if "RAM" in line.upper() and not name:
-                    name = line
-                if ("฿" in line or "บาท" in line or re.search(r'^\d{3,5}$', line.replace(',', ''))) and not price:
-                    price = line
+            for _ in range(4):
+                await page.evaluate("window.scrollBy(0, 1200)")
+                await page.wait_for_timeout(1000)
 
-            if name and price:
-                results.append(clean_and_parse_ram(name, price, "Advice"))
-    except Exception as e:
-        print(f"Advice Scraping Error: {e}")
-    print(f"✅ Advice Scraped: {len(results)} items")
+            items = await page.query_selector_all(".product-box, .product-list-item, div[class*='product']")
+            for item in items:
+                text_content = await item.inner_text()
+                lines = [line.strip() for line in text_content.split('\n') if line.strip()]
+                
+                name, price = None, None
+                for line in lines:
+                    if "RAM" in line.upper() and not name:
+                        name = line
+                    if ("฿" in line or "บาท" in line or re.search(r'^\d{3,5}$', line.replace(',', ''))) and not price:
+                        price = line
+
+                if name and price:
+                    parsed = clean_and_parse_ram(name, price, "Advice")
+                    if parsed:  # จะถูกเพิ่มเฉพาะที่เป็น SO-DIMM/U-DIMM และ DDR4/DDR5
+                        results.append(parsed)
+        except Exception as e:
+            print(f"Advice Scraping Error on {url}: {e}")
+            
+    print(f"✅ Advice Scraped Total: {len(results)} items (DDR4/DDR5 Only)")
     return results
 
 async def scrape_jib(page) -> list:
     results = []
-    try:
-        print("🌐 Scraping JIB...")
-        await page.goto("https://www.jib.co.th/web/product/product_list/3/1026", wait_until="domcontentloaded", timeout=60000)
-        await page.wait_for_timeout(5000)
-        
-        for _ in range(3):
-            await page.evaluate("window.scrollBy(0, 1000)")
-            await page.wait_for_timeout(1000)
-
-        items = await page.query_selector_all(".div_product_item, .prod_list_box, div[class*='product']")
-        for item in items:
-            text_content = await item.inner_text()
-            lines = [line.strip() for line in text_content.split('\n') if line.strip()]
+    # หมวดหมู่ JIB: ทั้ง PC Gaming และ Notebook
+    urls = [
+        "https://www.jib.co.th/web/product/product_list/3/1026", # Notebook RAM
+        "https://www.jib.co.th/web/product/product_list/3/1025"  # PC RAM
+    ]
+    
+    for url in urls:
+        try:
+            print(f"🌐 Scraping JIB: {url}")
+            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            await page.wait_for_timeout(4000)
             
-            name = None
-            price = None
-            for line in lines:
-                if any(b in line.upper() for b in BRANDS) and not name:
-                    name = line
-                if ("บาท" in line or "฿" in line or re.search(r'^\d{1,2},\d{3}$', line)) and not price:
-                    price = line
+            for _ in range(4):
+                await page.evaluate("window.scrollBy(0, 1200)")
+                await page.wait_for_timeout(1000)
 
-            if name and price:
-                results.append(clean_and_parse_ram(name, price, "JIB"))
-    except Exception as e:
-        print(f"JIB Scraping Error: {e}")
-    print(f"✅ JIB Scraped: {len(results)} items")
+            items = await page.query_selector_all(".div_product_item, .prod_list_box, div[class*='product']")
+            for item in items:
+                text_content = await item.inner_text()
+                lines = [line.strip() for line in text_content.split('\n') if line.strip()]
+                
+                name, price = None, None
+                for line in lines:
+                    if any(b in line.upper() for b in BRANDS) and not name:
+                        name = line
+                    if ("บาท" in line or "฿" in line or re.search(r'^\d{1,2},\d{3}$', line)) and not price:
+                        price = line
+
+                if name and price:
+                    parsed = clean_and_parse_ram(name, price, "JIB")
+                    if parsed:
+                        results.append(parsed)
+        except Exception as e:
+            print(f"JIB Scraping Error on {url}: {e}")
+            
+    print(f"✅ JIB Scraped Total: {len(results)} items (DDR4/DDR5 Only)")
     return results
 
 def send_email_with_excel(filepath, status_msg=""):
@@ -135,15 +168,15 @@ def send_email_with_excel(filepath, status_msg=""):
     receiver_email = os.environ.get("RECEIVER_EMAIL")
 
     if not sender_email or not app_password or not receiver_email:
-        print("❌ Environment variables missing!")
+        print("❌ Missing secrets!")
         return
 
     msg = MIMEMultipart()
     msg['From'] = sender_email
     msg['To'] = receiver_email
-    msg['Subject'] = f"📊 รายงานเปรียบเทียบราคา RAM ประจำวัน ({status_msg})"
+    msg['Subject'] = f"📊 รายงานเปรียบเทียบราคา RAM DDR4/DDR5 ({status_msg})"
 
-    body = f"สวัสดีครับ\n\nรายงานสรุปราคา RAM ประจำวัน\nสถานะ: {status_msg}\n\nดูรายละเอียดในไฟล์แนบได้เลยครับ"
+    body = f"สวัสดีครับ\n\nรายงานสรุปราคา RAM (SO-DIMM & U-DIMM DDR4/DDR5)\nสถานะ: {status_msg}\n\nดูรายละเอียดในไฟล์แนบได้เลยครับ"
     msg.attach(MIMEText(body, 'plain'))
 
     if filepath and os.path.exists(filepath):
@@ -166,14 +199,9 @@ def send_email_with_excel(filepath, status_msg=""):
 
 async def main():
     async with async_playwright() as p:
-        # เปิด เบราว์เซอร์ พร้อมเทคนิค Bypass Anti-Bot
         browser = await p.chromium.launch(
             headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-blink-features=AutomationControlled"
-            ]
+            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-blink-features=AutomationControlled"]
         )
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
@@ -181,8 +209,6 @@ async def main():
             locale="th-TH"
         )
         page = await context.new_page()
-        
-        # ปลอมตัวไม่ให้เว็บรู้ว่าเป็น Playwright/Automation
         await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
         advice_data = await scrape_advice(page)
@@ -196,6 +222,7 @@ async def main():
             df = pd.DataFrame(all_data)
             df = df.dropna(subset=['Price'])
             
+            # ทำ Pivot Table เปรียบเทียบราคา Advice vs JIB
             pivot_df = df.pivot_table(
                 index=['Form_Factor', 'DDR_Type', 'Capacity', 'Bus_Speed', 'Brand', 'Part_Number'],
                 columns='Source',
@@ -204,14 +231,14 @@ async def main():
             ).reset_index()
 
             with pd.ExcelWriter(file_name, engine='openpyxl') as writer:
-                df.to_excel(writer, sheet_name="Raw Data Cleaned", index=False)
+                df.to_excel(writer, sheet_name="Raw Cleaned", index=False)
                 pivot_df.to_excel(writer, sheet_name="Pivot Comparison", index=False)
 
-            status_msg = f"ดึงข้อมูลสำเร็จทั้งหมด {len(df)} รายการ"
+            status_msg = f"ดึงข้อมูล DDR4/DDR5 สำเร็จ {len(df)} รายการ"
         else:
-            df_empty = pd.DataFrame([{"Message": "No data scraped today"}])
+            df_empty = pd.DataFrame([{"Message": "No DDR4/DDR5 data found"}])
             df_empty.to_excel(file_name, index=False)
-            status_msg = "ไม่สามารถสกัดข้อมูลได้ (ถูก Anti-Bot บล็อก)"
+            status_msg = "ไม่พบข้อมูล RAM DDR4/DDR5"
 
         send_email_with_excel(file_name, status_msg)
 
