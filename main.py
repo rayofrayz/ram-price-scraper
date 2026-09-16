@@ -165,15 +165,18 @@ async def scrape_jib(page) -> list:
 def send_email_with_excel(filepath, status_msg=""):
     sender_email = os.environ.get("SENDER_EMAIL")
     app_password = os.environ.get("GMAIL_APP_PASSWORD")
-    receiver_email = os.environ.get("RECEIVER_EMAIL")
+    receiver_email_raw = os.environ.get("RECEIVER_EMAIL")
 
-    if not sender_email or not app_password or not receiver_email:
+    if not sender_email or not app_password or not receiver_email_raw:
         print("❌ Missing secrets!")
         return
 
+    # แยกรายชื่ออีเมลด้วยเครื่องหมายคอมมา และลบช่องว่างส่วนเกิน
+    receiver_list = [email.strip() for email in receiver_email_raw.split(',') if email.strip()]
+
     msg = MIMEMultipart()
     msg['From'] = sender_email
-    msg['To'] = receiver_email
+    msg['To'] = ", ".join(receiver_list)  # แสดงรายชื่อผู้รับทั้งหมดในหัวข้อ To
     msg['Subject'] = f"📊 รายงานเปรียบเทียบราคา RAM DDR4/DDR5 ({status_msg})"
 
     body = f"สวัสดีครับ\n\nรายงานสรุปราคา RAM (SO-DIMM & U-DIMM DDR4/DDR5)\nสถานะ: {status_msg}\n\nดูรายละเอียดในไฟล์แนบได้เลยครับ"
@@ -191,9 +194,10 @@ def send_email_with_excel(filepath, status_msg=""):
         server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
         server.login(sender_email, app_password)
-        server.send_message(msg)
+        # ส่งหาทุกคนในรายการ receiver_list
+        server.sendmail(sender_email, receiver_list, msg.as_string())
         server.quit()
-        print("✉️ ส่ง Email สำเร็จ!")
+        print(f"✉️ ส่ง Email สำเร็จไปยัง {len(receiver_list)} คน!")
     except Exception as e:
         print(f"❌ SMTP Error: {e}")
 
