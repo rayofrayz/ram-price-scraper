@@ -22,7 +22,7 @@ def clean_and_parse_hardware(raw_title: str, price_val, source: str) -> dict:
     tech_spec = None
     
     # -------------------------------------------------------------
-    # 1. จำแนกหมวดหมู่ RAM
+    # 1. หมวดหมู่ RAM
     # -------------------------------------------------------------
     if 'RAM' in title_upper or 'DDR' in title_upper:
         category = 'RAM'
@@ -36,7 +36,6 @@ def clean_and_parse_hardware(raw_title: str, price_val, source: str) -> dict:
         bus_match = re.search(r'\b(2133|2400|2666|2933|3200|3600|4800|5200|5600|6000|6200|6400|6600|6800|7200|7600|8000)\b', title_upper)
         bus_speed = f"{bus_match.group(1)}MHz" if bus_match else "UNKNOWN"
 
-        # กรองเฉพาะ DDR4 Bus 3200 และ DDR5 ทั้งหมด
         if ddr_type == "DDR4" and bus_speed != "3200MHz" and bus_speed != "UNKNOWN":
             return None
 
@@ -45,7 +44,7 @@ def clean_and_parse_hardware(raw_title: str, price_val, source: str) -> dict:
         tech_spec = f"{ddr_type} ({bus_speed})"
 
     # -------------------------------------------------------------
-    # 2. จำแนกหมวดหมู่ SSD (SATA 2.5" & M.2 NVMe/SATA)
+    # 2. หมวดหมู่ SSD (SATA 2.5" & M.2 NVMe/SATA)
     # -------------------------------------------------------------
     elif any(k in title_upper for k in ['SSD', 'SOLID STATE', 'NVME', 'SATA', 'M.2']):
         category = 'SSD'
@@ -61,7 +60,7 @@ def clean_and_parse_hardware(raw_title: str, price_val, source: str) -> dict:
     else:
         return None
 
-    # 3. สกัด Capacity (ความจุ GB/TB)
+    # 3. ความจุ (GB/TB)
     cap_match = re.search(r'(\d+)\s*(GB|TB)', title_upper)
     capacity = f"{cap_match.group(1)}{cap_match.group(2)}" if cap_match else "UNKNOWN"
 
@@ -107,7 +106,6 @@ def clean_and_parse_hardware(raw_title: str, price_val, source: str) -> dict:
 
 async def scrape_advice(page) -> list:
     results = []
-    # รายชื่อ URL หมวดหมู่ RAM และ SSD ของ Advice
     categories = [
         {"name": "PC RAM", "url": "https://www.advice.co.th/product/ram-for-pc"},
         {"name": "Notebook RAM", "url": "https://www.advice.co.th/product/ram-for-notebook"},
@@ -122,12 +120,12 @@ async def scrape_advice(page) -> list:
             await page.goto(cat['url'], wait_until="domcontentloaded", timeout=60000)
             await page.wait_for_timeout(3000)
             
-            # เลื่อนลงเพื่อโหลดรายการสินค้า Ajax
             for _ in range(8):
                 await page.evaluate("window.scrollBy(0, 2000)")
                 await page.wait_for_timeout(800)
 
-            items = await page.query_selector_all(".product-box, .product-list-item, .product-card, div[class*='product']")
+            # Selector ปรับปรุงให้ครอบคลุมการ์ดสินค้าทุกแบบบน Advice
+            items = await page.query_selector_all(".product-box, .product-list-item, .product-card, .product-item, div[class*='product']")
             print(f"Found {len(items)} elements on {cat['name']}")
 
             for item in items:
@@ -137,8 +135,9 @@ async def scrape_advice(page) -> list:
                 name, price = None, None
                 for line in lines:
                     line_u = line.upper()
-                    if any(k in line_u for k in ['RAM', 'SSD', 'DDR', 'SATA', 'NVME', 'M.2', 'GB', 'TB']) and not name:
-                        if len(line) > 8:
+                    # ตรวจสอบชื่อสินค้าทั้ง RAM และ SSD
+                    if any(k in line_u for k in ['RAM', 'SSD', 'DDR', 'SATA', 'NVME', 'M.2', 'GB', 'TB', 'SOLID']) and not name:
+                        if len(line) > 6:
                             name = line
                     if ("฿" in line or "บาท" in line or re.search(r'^\d{1,2},\d{3}$', line) or re.search(r'^\d{3,5}$', line)) and not price:
                         price = line
