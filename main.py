@@ -22,7 +22,7 @@ def clean_and_parse_hardware(raw_title: str, price_val, source: str) -> dict:
     tech_spec = None
     
     # -------------------------------------------------------------
-    # 1. หมวดหมู่ RAM (DDR4 3200 & DDR5)
+    # 1. หมวดหมู่ RAM
     # -------------------------------------------------------------
     if 'RAM' in title_upper or 'DDR' in title_upper:
         category = 'RAM'
@@ -106,7 +106,6 @@ def clean_and_parse_hardware(raw_title: str, price_val, source: str) -> dict:
 
 async def scrape_advice(page) -> list:
     results = []
-    # อัปเดต URL ของ Advice ให้ตรงกับหมวดหมู่จริงบนเว็บ
     categories = [
         {"name": "PC RAM", "url": "https://www.advice.co.th/product/ram-for-pc"},
         {"name": "Notebook RAM", "url": "https://www.advice.co.th/product/ram-for-notebook"},
@@ -119,25 +118,35 @@ async def scrape_advice(page) -> list:
             await page.goto(cat['url'], wait_until="domcontentloaded", timeout=60000)
             await page.wait_for_timeout(4000)
             
-            # เลื่อนหน้าจอเพื่อกระตุ้น Lazy Load
-            for _ in range(10):
+            for _ in range(12):
                 await page.evaluate("window.scrollBy(0, 2000)")
                 await page.wait_for_timeout(800)
 
-            items = await page.query_selector_all(".product-box, .product-list-item, .product-card, .product-item, div[class*='product']")
+            # ค้นหากล่องสินค้าทั้งหมด
+            items = await page.query_selector_all("div[class*='product'], .product-box, .product-list-item, .product-card, .product-item")
             print(f"Found {len(items)} elements on {cat['name']}")
 
             for item in items:
+                # ดึงราคาจาก Element หรือ Text โดยตรง
+                price_el = await item.query_selector(".price, [class*='price'], .p-price")
+                price_text = await price_el.inner_text() if price_el else ""
+                
                 text_content = await item.inner_text()
                 lines = [line.strip() for line in text_content.split('\n') if line.strip()]
                 
                 name, price = None, None
+                
+                if price_text:
+                    price = price_text
+                
                 for line in lines:
                     line_u = line.upper()
+                    # ตรวจหาชื่อสินค้า
                     if any(k in line_u for k in ['RAM', 'SSD', 'DDR', 'SATA', 'NVME', 'M.2', 'GB', 'TB', 'SOLID']) and not name:
-                        if len(line) > 5:
+                        if len(line) > 5 and not any(p_kw in line_u for p_kw in ['บาท', '฿', 'SPECIAL', 'DISCOUNT', 'SAVE']):
                             name = line
-                    if ("฿" in line or "บาท" in line or re.search(r'^\d{1,2},\d{3}$', line) or re.search(r'^\d{3,5}$', line)) and not price:
+                    # หากไม่มี price_el ให้ตรวจหาบรรทัดราคา
+                    if not price and ("฿" in line or "บาท" in line or re.search(r'^\d{1,2},\d{3}$', line) or re.search(r'^\d{3,5}$', line)):
                         price = line
 
                 if name and price:
