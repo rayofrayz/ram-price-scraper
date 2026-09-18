@@ -12,7 +12,7 @@ import pandas as pd
 BRANDS = [
     'ADATA', 'XPG', 'KINGSTON', 'CRUCIAL', 'CORSAIR', 'LEXAR', 'G.SKILL', 
     'TEAMGROUP', 'BLACKBERRY', 'PNY', 'SAMSUNG', 'HYNIX', 'KLEVV', 'THERMALTAKE', 
-    'COLORFUL', 'HIKVISION', 'HIKSEMI', 'APACER', 'GALAX', 'WESTERN DIGITAL', 'WD', 'SEAGATE', 'SANDISK'
+    'COLORFUL', 'HIKVISION', 'HIKSEMI', 'APACER', 'GALAX', 'WESTERN DIGITAL', 'WD', 'SEAGATE', 'SANDISK', 'ACER', 'TRANSCEND'
 ]
 
 def clean_and_parse_hardware(raw_title: str, price_val, source: str) -> dict:
@@ -47,12 +47,12 @@ def clean_and_parse_hardware(raw_title: str, price_val, source: str) -> dict:
     # -------------------------------------------------------------
     # 2. จำแนกหมวดหมู่ SSD (SATA 2.5" & M.2 NVMe/SATA)
     # -------------------------------------------------------------
-    elif 'SSD' in title_upper or 'SOLID STATE' in title_upper or 'NVME' in title_upper or 'SATA' in title_upper:
+    elif any(k in title_upper for k in ['SSD', 'SOLID STATE', 'NVME', 'SATA', 'M.2']):
         category = 'SSD'
-        if 'M.2' in title_upper or 'NVME' in title_upper or '2280' in title_upper or 'PCIe' in title_upper:
+        if any(k in title_upper for k in ['M.2', 'NVME', '2280', 'PCIE']):
             form_factor = 'M.2'
-            tech_spec = 'M.2 NVMe PCIe' if ('NVME' in title_upper or 'PCIE' in title_upper or 'GEN' in title_upper) else 'M.2 SATA'
-        elif '2.5' in title_upper or 'SATA3' in title_upper or 'SATA III' in title_upper or 'SATA' in title_upper:
+            tech_spec = 'M.2 NVMe PCIe' if any(k in title_upper for k in ['NVME', 'PCIE', 'GEN']) else 'M.2 SATA'
+        elif any(k in title_upper for k in ['2.5', 'SATA3', 'SATA III', 'SATA']):
             form_factor = '2.5 inch'
             tech_spec = 'SATA III (2.5")'
         else:
@@ -107,11 +107,13 @@ def clean_and_parse_hardware(raw_title: str, price_val, source: str) -> dict:
 
 async def scrape_advice(page) -> list:
     results = []
-    # ครอบคลุมทั้งหมวด RAM และ SSD (SATA / M.2)
+    # รายชื่อ URL หมวดหมู่ RAM และ SSD ของ Advice
     categories = [
         {"name": "PC RAM", "url": "https://www.advice.co.th/product/ram-for-pc"},
         {"name": "Notebook RAM", "url": "https://www.advice.co.th/product/ram-for-notebook"},
-        {"name": "SSD", "url": "https://www.advice.co.th/product/solid-state-drive-ssd"}
+        {"name": "SSD All", "url": "https://www.advice.co.th/product/solid-state-drive-ssd"},
+        {"name": "SSD M.2", "url": "https://www.advice.co.th/product/solid-state-drive-ssd/ssd-m-2-nvme"},
+        {"name": "SSD SATA", "url": "https://www.advice.co.th/product/solid-state-drive-ssd/ssd-sata-2-5-"}
     ]
     
     for cat in categories:
@@ -120,39 +122,36 @@ async def scrape_advice(page) -> list:
             await page.goto(cat['url'], wait_until="domcontentloaded", timeout=60000)
             await page.wait_for_timeout(3000)
             
-            # เลื่อนลงเพื่อโหลดรายการสินค้าให้ครอบคลุม
-            for _ in range(10):
+            # เลื่อนลงเพื่อโหลดรายการสินค้า Ajax
+            for _ in range(8):
                 await page.evaluate("window.scrollBy(0, 2000)")
-                await page.wait_for_timeout(1000)
+                await page.wait_for_timeout(800)
 
-                items = await page.query_selector_all(".product-box, .product-list-item, div[class*='product']")
-                for item in items:
-                    text_content = await item.inner_text()
-                    lines = [line.strip() for line in text_content.split('\n') if line.strip()]
-                    
-                    name, price = None, None
-                    for line in lines:
-                        if any(k in line.upper() for k in ['RAM', 'SSD', 'DDR', 'SATA', 'NVME', 'M.2']) and not name:
-                            if len(line) > 6:
-                                name = line
-                        if ("฿" in line or "บาท" in line or re.search(r'^\d{1,2},\d{3}$', line) or re.search(r'^\d{3,5}$', line)) and not price:
-                            price = line
+            items = await page.query_selector_all(".product-box, .product-list-item, .product-card, div[class*='product']")
+            print(f"Found {len(items)} elements on {cat['name']}")
 
-                    if name and price:
-                        parsed = clean_and_parse_hardware(name, price, "Advice")
-                        if parsed:
-                            results.append(parsed)
+            for item in items:
+                text_content = await item.inner_text()
+                lines = [line.strip() for line in text_content.split('\n') if line.strip()]
+                
+                name, price = None, None
+                for line in lines:
+                    line_u = line.upper()
+                    if any(k in line_u for k in ['RAM', 'SSD', 'DDR', 'SATA', 'NVME', 'M.2', 'GB', 'TB']) and not name:
+                        if len(line) > 8:
+                            name = line
+                    if ("฿" in line or "บาท" in line or re.search(r'^\d{1,2},\d{3}$', line) or re.search(r'^\d{3,5}$', line)) and not price:
+                        price = line
 
-                # ลองกดปุ่ม 'ดูเพิ่มเติม' หากมี
-                load_more_btn = await page.query_selector("button:has-text('ดูเพิ่มเติม'), .btn-loadmore")
-                if load_more_btn and await load_more_btn.is_visible():
-                    await load_more_btn.click()
-                    await page.wait_for_timeout(1500)
+                if name and price:
+                    parsed = clean_and_parse_hardware(name, price, "Advice")
+                    if parsed:
+                        results.append(parsed)
 
         except Exception as e:
             print(f"Advice Scraping Error on {cat['name']}: {e}")
             
-    print(f"✅ Advice Total Items Scraped: {len(results)}")
+    print(f"✅ Advice Total Scraped: {len(results)} items")
     return results
 
 def send_email_with_excel(filepath, status_msg=""):
@@ -215,7 +214,6 @@ async def main():
             df = pd.DataFrame(advice_data)
             df = df.drop_duplicates(subset=['Source', 'Model_Raw', 'Price'])
             
-            # แยก Dataframe สำหรับ RAM และ SSD
             ram_df = df[df['Category'] == 'RAM']
             ssd_df = df[df['Category'] == 'SSD']
 
