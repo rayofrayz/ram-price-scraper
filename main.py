@@ -22,7 +22,7 @@ def clean_and_parse_hardware(raw_title: str, price_val, source: str) -> dict:
     tech_spec = None
     
     # -------------------------------------------------------------
-    # 1. หมวดหมู่ RAM
+    # 1. หมวดหมู่ RAM (DDR4 3200 & DDR5)
     # -------------------------------------------------------------
     if 'RAM' in title_upper or 'DDR' in title_upper:
         category = 'RAM'
@@ -46,7 +46,7 @@ def clean_and_parse_hardware(raw_title: str, price_val, source: str) -> dict:
     # -------------------------------------------------------------
     # 2. หมวดหมู่ SSD (SATA 2.5" & M.2 NVMe/SATA)
     # -------------------------------------------------------------
-    elif any(k in title_upper for k in ['SSD', 'SOLID STATE', 'NVME', 'SATA', 'M.2']):
+    elif any(k in title_upper for k in ['SSD', 'SOLID', 'NVME', 'SATA', 'M.2', 'PORTABLE SSD']):
         category = 'SSD'
         if any(k in title_upper for k in ['M.2', 'NVME', '2280', 'PCIE']):
             form_factor = 'M.2'
@@ -60,7 +60,7 @@ def clean_and_parse_hardware(raw_title: str, price_val, source: str) -> dict:
     else:
         return None
 
-    # 3. ความจุ (GB/TB)
+    # 3. สกัด Capacity (ความจุ GB/TB)
     cap_match = re.search(r'(\d+)\s*(GB|TB)', title_upper)
     capacity = f"{cap_match.group(1)}{cap_match.group(2)}" if cap_match else "UNKNOWN"
 
@@ -106,25 +106,24 @@ def clean_and_parse_hardware(raw_title: str, price_val, source: str) -> dict:
 
 async def scrape_advice(page) -> list:
     results = []
+    # อัปเดต URL ของ Advice ให้ตรงกับหมวดหมู่จริงบนเว็บ
     categories = [
         {"name": "PC RAM", "url": "https://www.advice.co.th/product/ram-for-pc"},
         {"name": "Notebook RAM", "url": "https://www.advice.co.th/product/ram-for-notebook"},
-        {"name": "SSD All", "url": "https://www.advice.co.th/product/solid-state-drive-ssd"},
-        {"name": "SSD M.2", "url": "https://www.advice.co.th/product/solid-state-drive-ssd/ssd-m-2-nvme"},
-        {"name": "SSD SATA", "url": "https://www.advice.co.th/product/solid-state-drive-ssd/ssd-sata-2-5-"}
+        {"name": "SSD", "url": "https://www.advice.co.th/product/ssd-solid-state-drive"}
     ]
     
     for cat in categories:
         try:
             print(f"🌐 Scraping Advice ({cat['name']}): {cat['url']}")
             await page.goto(cat['url'], wait_until="domcontentloaded", timeout=60000)
-            await page.wait_for_timeout(3000)
+            await page.wait_for_timeout(4000)
             
-            for _ in range(8):
+            # เลื่อนหน้าจอเพื่อกระตุ้น Lazy Load
+            for _ in range(10):
                 await page.evaluate("window.scrollBy(0, 2000)")
                 await page.wait_for_timeout(800)
 
-            # Selector ปรับปรุงให้ครอบคลุมการ์ดสินค้าทุกแบบบน Advice
             items = await page.query_selector_all(".product-box, .product-list-item, .product-card, .product-item, div[class*='product']")
             print(f"Found {len(items)} elements on {cat['name']}")
 
@@ -135,9 +134,8 @@ async def scrape_advice(page) -> list:
                 name, price = None, None
                 for line in lines:
                     line_u = line.upper()
-                    # ตรวจสอบชื่อสินค้าทั้ง RAM และ SSD
                     if any(k in line_u for k in ['RAM', 'SSD', 'DDR', 'SATA', 'NVME', 'M.2', 'GB', 'TB', 'SOLID']) and not name:
-                        if len(line) > 6:
+                        if len(line) > 5:
                             name = line
                     if ("฿" in line or "บาท" in line or re.search(r'^\d{1,2},\d{3}$', line) or re.search(r'^\d{3,5}$', line)) and not price:
                         price = line
