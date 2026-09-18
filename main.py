@@ -15,151 +15,180 @@ BRANDS = [
     'COLORFUL', 'HIKVISION', 'HIKSEMI', 'APACER', 'GALAX', 'WESTERN DIGITAL', 'WD', 'SEAGATE', 'SANDISK', 'ACER', 'TRANSCEND'
 ]
 
-def clean_and_parse_hardware(raw_title: str, price_val, source: str) -> dict:
-    title_upper = raw_title.upper()
-    category = None
-    form_factor = None
-    tech_spec = None
-    
-    # -------------------------------------------------------------
-    # 1. หมวดหมู่ RAM
-    # -------------------------------------------------------------
-    if 'RAM' in title_upper or 'DDR' in title_upper:
-        category = 'RAM'
-        if 'DDR5' in title_upper:
-            ddr_type = 'DDR5'
-        elif 'DDR4' in title_upper:
-            ddr_type = 'DDR4'
-        else:
-            return None
-
-        bus_match = re.search(r'\b(2133|2400|2666|2933|3200|3600|4800|5200|5600|6000|6200|6400|6600|6800|7200|7600|8000)\b', title_upper)
-        bus_speed = f"{bus_match.group(1)}MHz" if bus_match else "UNKNOWN"
-
-        if ddr_type == "DDR4" and bus_speed != "3200MHz" and bus_speed != "UNKNOWN":
-            return None
-
-        is_sodimm = any(k in title_upper for k in ['NB', 'NOTEBOOK', 'SO-DIMM', 'SODIMM', 'LAPTOP'])
-        form_factor = "SO-DIMM (Notebook)" if is_sodimm else "U-DIMM (Desktop/Gaming)"
-        tech_spec = f"{ddr_type} ({bus_speed})"
-
-    # -------------------------------------------------------------
-    # 2. หมวดหมู่ SSD (SATA 2.5" & M.2 NVMe/SATA)
-    # -------------------------------------------------------------
-    elif any(k in title_upper for k in ['SSD', 'SOLID', 'NVME', 'SATA', 'M.2', 'PORTABLE SSD']):
-        category = 'SSD'
-        if any(k in title_upper for k in ['M.2', 'NVME', '2280', 'PCIE']):
-            form_factor = 'M.2'
-            tech_spec = 'M.2 NVMe PCIe' if any(k in title_upper for k in ['NVME', 'PCIE', 'GEN']) else 'M.2 SATA'
-        elif any(k in title_upper for k in ['2.5', 'SATA3', 'SATA III', 'SATA']):
-            form_factor = '2.5 inch'
-            tech_spec = 'SATA III (2.5")'
-        else:
-            form_factor = 'SSD (General)'
-            tech_spec = 'SATA / NVMe'
-    else:
-        return None
-
-    # 3. สกัด Capacity (ความจุ GB/TB)
-    cap_match = re.search(r'(\d+)\s*(GB|TB)', title_upper)
-    capacity = f"{cap_match.group(1)}{cap_match.group(2)}" if cap_match else "UNKNOWN"
-
-    # 4. แปลงราคาเป็นตัวเลข
-    try:
-        clean_price = float(re.sub(r'[^\d.]', '', str(price_val)))
-    except (ValueError, TypeError):
-        clean_price = None
-
-    if not clean_price or clean_price <= 0:
-        return None
-
-    # 5. สกัด Brand
-    brand_found = "OTHER"
-    for b in BRANDS:
-        if re.search(rf'\b{b}\b', title_upper):
-            brand_found = b
-            break
-
-    # 6. สกัด Part Number
-    part_number = "N/A"
-    pn_match = re.search(r'\(([^)]+)\)', raw_title)
-    if pn_match:
-        part_number = pn_match.group(1).strip()
-    else:
-        for token in raw_title.split():
-            clean_t = token.strip('(),')
-            if re.match(r'^(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9\-/]{5,25}$', clean_t):
-                part_number = clean_t
-                break
-
-    return {
-        "Source": source,
-        "Category": category,
-        "Brand": brand_found,
-        "Model_Raw": raw_title.strip(),
-        "Part_Number": part_number,
-        "Form_Factor": form_factor,
-        "Tech_Spec": tech_spec,
-        "Capacity": capacity,
-        "Price": clean_price
-    }
-
-async def scrape_advice(page) -> list:
+# =============================================================================
+# 1. ฟังก์ชันสแครปเฉพาะ RAM (DDR4 Bus 3200 & DDR5 All)
+# =============================================================================
+async def scrape_ram(page) -> list:
     results = []
-    categories = [
-        {"name": "PC RAM", "url": "https://www.advice.co.th/product/ram-for-pc"},
-        {"name": "Notebook RAM", "url": "https://www.advice.co.th/product/ram-for-notebook"},
-        {"name": "SSD", "url": "https://www.advice.co.th/product/ssd-solid-state-drive"}
+    urls = [
+        "https://www.advice.co.th/product/ram-for-pc",
+        "https://www.advice.co.th/product/ram-for-notebook"
     ]
     
-    for cat in categories:
+    for url in urls:
         try:
-            print(f"🌐 Scraping Advice ({cat['name']}): {cat['url']}")
-            await page.goto(cat['url'], wait_until="domcontentloaded", timeout=60000)
-            await page.wait_for_timeout(4000)
+            print(f"🌐 Scraping RAM: {url}")
+            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            await page.wait_for_timeout(3000)
             
-            for _ in range(12):
+            for _ in range(8):
                 await page.evaluate("window.scrollBy(0, 2000)")
                 await page.wait_for_timeout(800)
 
-            # ค้นหากล่องสินค้าทั้งหมด
-            items = await page.query_selector_all("div[class*='product'], .product-box, .product-list-item, .product-card, .product-item")
-            print(f"Found {len(items)} elements on {cat['name']}")
-
+            items = await page.query_selector_all("div[class*='product'], .product-box, .product-card")
+            
             for item in items:
-                # ดึงราคาจาก Element หรือ Text โดยตรง
-                price_el = await item.query_selector(".price, [class*='price'], .p-price")
-                price_text = await price_el.inner_text() if price_el else ""
+                text = await item.inner_text()
+                lines = [l.strip() for l in text.split('\n') if l.strip()]
                 
-                text_content = await item.inner_text()
-                lines = [line.strip() for line in text_content.split('\n') if line.strip()]
-                
-                name, price = None, None
-                
-                if price_text:
-                    price = price_text
-                
+                title, price_str = None, None
                 for line in lines:
                     line_u = line.upper()
-                    # ตรวจหาชื่อสินค้า
-                    if any(k in line_u for k in ['RAM', 'SSD', 'DDR', 'SATA', 'NVME', 'M.2', 'GB', 'TB', 'SOLID']) and not name:
-                        if len(line) > 5 and not any(p_kw in line_u for p_kw in ['บาท', '฿', 'SPECIAL', 'DISCOUNT', 'SAVE']):
-                            name = line
-                    # หากไม่มี price_el ให้ตรวจหาบรรทัดราคา
-                    if not price and ("฿" in line or "บาท" in line or re.search(r'^\d{1,2},\d{3}$', line) or re.search(r'^\d{3,5}$', line)):
-                        price = line
+                    if ("RAM" in line_u or "DDR" in line_u) and not title:
+                        if len(line) > 6 and not any(k in line_u for k in ['บาท', '฿', 'SPECIAL', 'SAVE']):
+                            title = line
+                    if ("฿" in line or "บาท" in line or re.search(r'^\d{1,2},\d{3}$', line) or re.search(r'^\d{3,5}$', line)) and not price_str:
+                        price_str = line
 
-                if name and price:
-                    parsed = clean_and_parse_hardware(name, price, "Advice")
-                    if parsed:
-                        results.append(parsed)
+                if title and price_str:
+                    title_u = title.upper()
+                    
+                    # ตรวจ DDR
+                    ddr_type = 'DDR5' if 'DDR5' in title_u else ('DDR4' if 'DDR4' in title_u else None)
+                    if not ddr_type:
+                        continue
+                        
+                    # ตรวจ Bus
+                    bus_match = re.search(r'\b(2133|2400|2666|2933|3200|3600|4800|5200|5600|6000|6200|6400|6600|6800|7200|7600|8000)\b', title_u)
+                    bus_speed = f"{bus_match.group(1)}MHz" if bus_match else "UNKNOWN"
+                    
+                    # กรองเฉพาะ DDR4 Bus 3200 และ DDR5 ทั้งหมด
+                    if ddr_type == "DDR4" and bus_speed != "3200MHz" and bus_speed != "UNKNOWN":
+                        continue
 
+                    # แปลงราคา
+                    try:
+                        price = float(re.sub(r'[^\d.]', '', price_str))
+                    except:
+                        continue
+
+                    is_sodimm = any(k in title_u for k in ['NB', 'NOTEBOOK', 'SO-DIMM', 'SODIMM', 'LAPTOP'])
+                    form_factor = "SO-DIMM (Notebook)" if is_sodimm else "U-DIMM (Desktop/Gaming)"
+                    
+                    cap_match = re.search(r'(\d+)\s*GB', title_u)
+                    capacity = f"{cap_match.group(1)}GB" if cap_match else "UNKNOWN"
+                    
+                    brand = "OTHER"
+                    for b in BRANDS:
+                        if re.search(rf'\b{b}\b', title_u):
+                            brand = b
+                            break
+
+                    results.append({
+                        "Source": "Advice",
+                        "Category": "RAM",
+                        "Brand": brand,
+                        "Model_Raw": title.strip(),
+                        "Form_Factor": form_factor,
+                        "Tech_Spec": f"{ddr_type} ({bus_speed})",
+                        "Capacity": capacity,
+                        "Price": price
+                    })
         except Exception as e:
-            print(f"Advice Scraping Error on {cat['name']}: {e}")
+            print(f"RAM Scraping Error on {url}: {e}")
             
-    print(f"✅ Advice Total Scraped: {len(results)} items")
+    print(f"✅ Scraped RAM Total: {len(results)} items")
     return results
 
+# =============================================================================
+# 2. ฟังก์ชันสแครปเฉพาะ SSD (M.2 NVMe/SATA & 2.5" SATA)
+# =============================================================================
+async def scrape_ssd(page) -> list:
+    results = []
+    # ใช้ URL ตรงหมวดหมู่ SSD ของ Advice
+    urls = [
+        "https://www.advice.co.th/product/ssd-solid-state-drive",
+        "https://www.advice.co.th/product/ssd-solid-state-drive/ssd-m-2-nvme",
+        "https://www.advice.co.th/product/ssd-solid-state-drive/ssd-sata-2-5-"
+    ]
+    
+    for url in urls:
+        try:
+            print(f"🌐 Scraping SSD: {url}")
+            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            await page.wait_for_timeout(3000)
+            
+            for _ in range(10):
+                await page.evaluate("window.scrollBy(0, 2000)")
+                await page.wait_for_timeout(800)
+
+            items = await page.query_selector_all("div[class*='product'], .product-box, .product-card, .product-item")
+            
+            for item in items:
+                text = await item.inner_text()
+                lines = [l.strip() for l in text.split('\n') if l.strip()]
+                
+                title, price_str = None, None
+                for line in lines:
+                    line_u = line.upper()
+                    # ค้นหาข้อความชื่อ SSD
+                    if any(k in line_u for k in ['SSD', 'SOLID', 'NVME', 'SATA', 'M.2', 'PORTABLE']) and not title:
+                        if len(line) > 5 and not any(k in line_u for k in ['บาท', '฿', 'SPECIAL', 'SAVE']):
+                            title = line
+                    if ("฿" in line or "บาท" in line or re.search(r'^\d{1,2},\d{3}$', line) or re.search(r'^\d{3,5}$', line)) and not price_str:
+                        price_str = line
+
+                if title and price_str:
+                    title_u = title.upper()
+                    
+                    # แปลงราคา
+                    try:
+                        price = float(re.sub(r'[^\d.]', '', price_str))
+                    except:
+                        continue
+                        
+                    if price <= 0:
+                        continue
+
+                    # ระบุ Form Factor และ Tech Spec
+                    if any(k in title_u for k in ['M.2', 'NVME', '2280', 'PCIE']):
+                        form_factor = 'M.2'
+                        tech_spec = 'M.2 NVMe PCIe' if any(k in title_u for k in ['NVME', 'PCIE', 'GEN']) else 'M.2 SATA'
+                    elif any(k in title_u for k in ['2.5', 'SATA3', 'SATA III', 'SATA']):
+                        form_factor = '2.5 inch'
+                        tech_spec = 'SATA III (2.5")'
+                    else:
+                        form_factor = 'SSD (General)'
+                        tech_spec = 'SATA / NVMe'
+
+                    cap_match = re.search(r'(\d+)\s*(GB|TB)', title_u)
+                    capacity = f"{cap_match.group(1)}{cap_match.group(2)}" if cap_match else "UNKNOWN"
+
+                    brand = "OTHER"
+                    for b in BRANDS:
+                        if re.search(rf'\b{b}\b', title_u):
+                            brand = b
+                            break
+
+                    results.append({
+                        "Source": "Advice",
+                        "Category": "SSD",
+                        "Brand": brand,
+                        "Model_Raw": title.strip(),
+                        "Form_Factor": form_factor,
+                        "Tech_Spec": tech_spec,
+                        "Capacity": capacity,
+                        "Price": price
+                    })
+        except Exception as e:
+            print(f"SSD Scraping Error on {url}: {e}")
+            
+    print(f"✅ Scraped SSD Total: {len(results)} items")
+    return results
+
+# =============================================================================
+# 3. ฟังก์ชันส่ง Email
+# =============================================================================
 def send_email_with_excel(filepath, status_msg=""):
     sender_email = os.environ.get("SENDER_EMAIL")
     app_password = os.environ.get("GMAIL_APP_PASSWORD")
@@ -176,7 +205,7 @@ def send_email_with_excel(filepath, status_msg=""):
     msg['To'] = ", ".join(receiver_list)
     msg['Subject'] = f"📊 รายงานราคา RAM & SSD Advice ({status_msg})"
 
-    body = f"สวัสดีครับ\n\nรายงานสรุปราคา RAM และ SSD (SATA / M.2) จาก Advice\nสถานะ: {status_msg}\n\nดูรายละเอียดในไฟล์แนบได้เลยครับ"
+    body = f"สวัสดีครับ\n\nรายงานสรุปราคา RAM และ SSD จาก Advice\nสถานะ: {status_msg}\n\nดูรายละเอียดในไฟล์แนบได้เลยครับ"
     msg.attach(MIMEText(body, 'plain'))
 
     if filepath and os.path.exists(filepath):
@@ -197,6 +226,9 @@ def send_email_with_excel(filepath, status_msg=""):
     except Exception as e:
         print(f"❌ SMTP Error: {e}")
 
+# =============================================================================
+# 4. Main Workflow
+# =============================================================================
 async def main():
     async with async_playwright() as p:
         browser = await p.chromium.launch(
@@ -211,20 +243,24 @@ async def main():
         page = await context.new_page()
         await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
-        advice_data = await scrape_advice(page)
+        # เรียกทำงานแยกฟังก์ชัน RAM และ SSD
+        ram_data = await scrape_ram(page)
+        ssd_data = await scrape_ssd(page)
+        
         await browser.close()
 
+        all_data = ram_data + ssd_data
         file_name = "Hardware_Advice_Prices.xlsx"
         
-        if advice_data:
-            df = pd.DataFrame(advice_data)
+        if all_data:
+            df = pd.DataFrame(all_data)
             df = df.drop_duplicates(subset=['Source', 'Model_Raw', 'Price'])
             
             ram_df = df[df['Category'] == 'RAM']
             ssd_df = df[df['Category'] == 'SSD']
 
             with pd.ExcelWriter(file_name, engine='openpyxl') as writer:
-                df.to_excel(writer, sheet_name="All Raw Cleaned", index=False)
+                df.to_excel(writer, sheet_name="All Hardware Cleaned", index=False)
                 if not ram_df.empty:
                     ram_df.to_excel(writer, sheet_name="RAM Summary", index=False)
                 if not ssd_df.empty:
