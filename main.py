@@ -382,6 +382,10 @@ async def scrape_ssd(page) -> list:
         print(f"   -> เก็บได้ {found_this_url} รายการจากหน้านี้")
         if found_this_url == 0:
             await save_debug(page, f"ssd_{url.rstrip('/').split('/')[-1]}")
+        elif found_this_url >= 20:
+            # หน้าหลักได้ข้อมูลเพียงพอแล้ว ข้ามหน้าย่อยที่เหลือ ลดจำนวน request ที่อาจโดนจับได้
+            print("   ✅ ได้ข้อมูลเพียงพอจากหน้านี้แล้ว ข้ามหน้าย่อยที่เหลือเพื่อลดความเสี่ยงโดนบล็อก")
+            break
 
     print(f"✅ Scraped SSD Total: {len(results)} items")
     return results
@@ -430,6 +434,27 @@ def send_email_with_excel(filepath, status_msg="", extra_attachments=None):
         print(f"❌ SMTP Error: {e}")
 
 
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+]
+
+
+async def new_stealth_context(browser):
+    """สร้าง context ใหม่ทุกครั้ง (คนละ cookie/session) พร้อมสุ่ม user-agent และใส่ referer
+    เหมือนมาจาก Google เพื่อลดโอกาสโดน anti-bot/rate-limit ต่อเนื่องข้ามหมวดหมู่"""
+    context = await browser.new_context(
+        user_agent=random.choice(USER_AGENTS),
+        viewport={"width": 1920, "height": 1080},
+        locale="th-TH",
+        extra_http_headers={"Referer": "https://www.google.com/"},
+    )
+    page = await context.new_page()
+    await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+    return context, page
+
+
 # =============================================================================
 # 4. Main Workflow
 # =============================================================================
@@ -439,16 +464,20 @@ async def main():
             headless=True,
             args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-blink-features=AutomationControlled"],
         )
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-            viewport={"width": 1920, "height": 1080},
-            locale="th-TH",
-        )
-        page = await context.new_page()
-        await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
-        ram_data = await scrape_ram(page)
-        ssd_data = await scrape_ssd(page)
+        # ใช้ context แยกกันคนละอันสำหรับ RAM และ SSD (คนละ cookie/session ตั้งแต่ต้น)
+        # เผื่อการบล็อกที่เจอเป็นแบบผูกกับ session ไม่ใช่แค่จังหวะเวลา
+        ram_context, ram_page = await new_stealth_context(browser)
+        ram_data = await scrape_ram(ram_page)
+        await ram_context.close()
+
+        cooldown = random.uniform(25, 45)
+        print(f"⏳ พักก่อนเริ่มสแครป SSD {cooldown:.1f} วินาที (ใช้ session ใหม่)...")
+        await asyncio.sleep(cooldown)
+
+        ssd_context, ssd_page = await new_stealth_context(browser)
+        ssd_data = await scrape_ssd(ssd_page)
+        await ssd_context.close()
 
         await browser.close()
 
