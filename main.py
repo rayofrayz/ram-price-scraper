@@ -1,5 +1,6 @@
 import asyncio
 import os
+import random
 import re
 import smtplib
 from email.mime.multipart import MIMEMultipart
@@ -18,6 +19,63 @@ BRANDS = [
 
 # ข้อความปุ่ม "โหลดเพิ่ม" ที่เว็บไทยมักใช้ (เผื่อ SSD ใช้ pagination แทน infinite scroll)
 LOAD_MORE_TEXTS = ["ดูเพิ่มเติม", "โหลดเพิ่ม", "แสดงเพิ่มเติม", "ดูสินค้าเพิ่มเติม", "Load More", "Show More"]
+
+# ข้อความที่บ่งบอกว่าเว็บกำลังแสดงหน้า "ไม่พบสินค้า" (อาจเกิดจาก anti-bot / rate limit
+# หลังจากสแครปหน้าอื่นมาอย่างหนักในเซสชันเดียวกัน ไม่ใช่ URL ผิดเสมอไป)
+BLOCKED_MARKERS = [
+    "สินค้าที่คุณค้นหาไม่พบแล้ว",
+    "ไม่พบสินค้าที่คุณค้นหา",
+    "กลับสู่หน้าแรก",
+]
+
+
+async def is_blocked_or_notfound(page) -> bool:
+    try:
+        text = await page.inner_text("body")
+    except Exception:
+        return False
+    return any(marker in text for marker in BLOCKED_MARKERS)
+
+
+async def human_pause(a=2.0, b=6.0):
+    """หน่วงเวลาสุ่มเลียนแบบมนุษย์ ลดโอกาสโดน anti-bot ตรวจจับ"""
+    await asyncio.sleep(random.uniform(a, b))
+
+
+async def safe_goto(page, url, max_retries=3):
+    """
+    เปิดหน้าเว็บพร้อม retry อัตโนมัติถ้าเจอหน้า 'ไม่พบสินค้า' (ซึ่งมักเป็นสัญญาณ
+    ของ anti-bot/rate-limit มากกว่า URL ผิด เพราะ URL เดิมนี้ยืนยันแล้วว่ามีอยู่จริง)
+    คืนค่า True ถ้าเปิดสำเร็จและไม่โดนบล็อก, False ถ้าลองจนครบแล้วยังไม่สำเร็จ
+    """
+    for attempt in range(1, max_retries + 1):
+        await human_pause(2.5, 6.0)  # หน่วงก่อนเปิดหน้าทุกครั้ง ไม่ยิงรัวๆ ติดกัน
+        try:
+            await page.goto(url, wait_until="networkidle", timeout=90000)
+        except Exception:
+            try:
+                await page.goto(url, wait_until="domcontentloaded", timeout=90000)
+            except Exception as e:
+                print(f"   ❌ เปิดหน้าไม่สำเร็จ (attempt {attempt}): {e}")
+                continue
+
+        await dismiss_popups(page)
+
+        if await is_blocked_or_notfound(page):
+            print(f"   🚫 เจอหน้า 'ไม่พบสินค้า' (attempt {attempt}/{max_retries}) - อาจโดน anti-bot, กำลังลองใหม่...")
+            # พักยาวขึ้นทุกครั้งที่ลองใหม่ (backoff) และลองรีเฟรชแทนการ goto ซ้ำ
+            await human_pause(6.0 + attempt * 4, 12.0 + attempt * 4)
+            try:
+                await page.reload(wait_until="networkidle", timeout=90000)
+            except Exception:
+                pass
+            if not await is_blocked_or_notfound(page):
+                return True
+            continue
+
+        return True
+
+    return False
 
 # หลายๆ selector ที่เป็นไปได้ เรียงจากเจาะจง -> กว้าง จะลองทีละอันจนกว่าจะเจอของ
 CANDIDATE_SELECTORS = [
@@ -60,7 +118,7 @@ async def load_all_items(page, max_rounds=15):
                 pass
 
         await page.evaluate("window.scrollBy(0, document.body.scrollHeight)")
-        await page.wait_for_timeout(1200)
+        await page.wait_for_timeout(random.randint(900, 1800))  # จังหวะสุ่มเล็กน้อย ลด pattern แบบบอท
 
         height = await page.evaluate("document.body.scrollHeight")
         if height == last_height and not clicked:
@@ -157,12 +215,12 @@ async def scrape_ram(page) -> list:
 
     for url in urls:
         print(f"🌐 Scraping RAM: {url}")
-        try:
-            await page.goto(url, wait_until="networkidle", timeout=90000)
-        except Exception:
-            await page.goto(url, wait_until="domcontentloaded", timeout=90000)
+        ok = await safe_goto(page, url)
+        if not ok:
+            print(f"   🚫 เปิดหน้านี้ไม่สำเร็จหลังลองหลายครั้ง (ยังเจอหน้า 'ไม่พบสินค้า'): {url}")
+            await save_debug(page, f"ram_{url.rstrip('/').split('/')[-1]}_blocked")
+            continue
 
-        await dismiss_popups(page)
         try:
             await page.wait_for_function("document.body.innerText.includes('฿')", timeout=20000)
         except Exception:
@@ -251,12 +309,12 @@ async def scrape_ssd(page) -> list:
 
     for url in urls:
         print(f"🌐 Scraping SSD: {url}")
-        try:
-            await page.goto(url, wait_until="networkidle", timeout=90000)
-        except Exception:
-            await page.goto(url, wait_until="domcontentloaded", timeout=90000)
+        ok = await safe_goto(page, url)
+        if not ok:
+            print(f"   🚫 เปิดหน้านี้ไม่สำเร็จหลังลองหลายครั้ง (ยังเจอหน้า 'ไม่พบสินค้า'): {url}")
+            await save_debug(page, f"ssd_{url.rstrip('/').split('/')[-1]}_blocked")
+            continue
 
-        await dismiss_popups(page)
         try:
             await page.wait_for_function("document.body.innerText.includes('฿')", timeout=20000)
         except Exception:
