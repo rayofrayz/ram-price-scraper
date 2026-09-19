@@ -301,10 +301,13 @@ async def scrape_ram(page) -> list:
 # =============================================================================
 async def scrape_ssd(page) -> list:
     results = []
+    # หมายเหตุ: URL เดิม (ssd-solid-state-drive, ssd-solid-state-drive/ssd-m-2-nvme,
+    # ssd-solid-state-drive/ssd-sata-2-5-) เป็น slug เก่าที่ Advice เลิกใช้แล้ว - ยืนยันจาก
+    # debug HTML ที่ได้จริง (class="error-message" ของแอพเอง ไม่ใช่การบล็อกแต่อย่างใด)
+    # slug ที่ถูกต้องปัจจุบันคือ solid-state-drive-ssd- ซึ่งลิงก์มาจากหน้าหมวดรวม
+    # https://www.advice.co.th/product/harddisk-storage โดยตรง
     urls = [
-        "https://www.advice.co.th/product/ssd-solid-state-drive",
-        "https://www.advice.co.th/product/ssd-solid-state-drive/ssd-m-2-nvme",
-        "https://www.advice.co.th/product/ssd-solid-state-drive/ssd-sata-2-5-",
+        "https://www.advice.co.th/product/solid-state-drive-ssd-",
     ]
 
     for url in urls:
@@ -471,8 +474,8 @@ async def main():
         ram_data = await scrape_ram(ram_page)
         await ram_context.close()
 
-        cooldown = random.uniform(25, 45)
-        print(f"⏳ พักก่อนเริ่มสแครป SSD {cooldown:.1f} วินาที (ใช้ session ใหม่)...")
+        cooldown = random.uniform(5, 12)
+        print(f"⏳ พักก่อนเริ่มสแครป SSD {cooldown:.1f} วินาที...")
         await asyncio.sleep(cooldown)
 
         ssd_context, ssd_page = await new_stealth_context(browser)
