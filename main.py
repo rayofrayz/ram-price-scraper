@@ -177,7 +177,7 @@ def parse_lines_to_item(lines, category):
         if category == "RAM" and not title and ("RAM" in line_u or "DDR" in line_u):
             if len(line) > 6 and not any(k in line_u for k in ['บาท', '฿', 'SPECIAL', 'SAVE']):
                 title = line
-        if category == "SSD" and not title and any(k in line_u for k in ['SSD', 'SOLID', 'NVME', 'SATA', 'M.2', 'PORTABLE']):
+        if category == "SSD" and not title and any(k in line_u for k in ['SSD', 'SOLID', 'NVME', 'M.2', '2280', '2242', '2230']):
             if len(line) > 5 and not any(k in line_u for k in ['บาท', '฿', 'SPECIAL', 'SAVE']):
                 title = line
         if not price_str and ("฿" in line or "บาท" in line or re.search(r'^\d{1,3}(,\d{3})*(\.\d+)?$', line)):
@@ -191,16 +191,53 @@ def parse_lines_to_item(lines, category):
     return title, price_str
 
 
-async def save_debug(page, name):
-    """เซฟ screenshot + html เก็บไว้ debug เวลาสแครปได้ 0 รายการ"""
+async def save_debug(page, name, console_log=None):
+    """เซฟ screenshot + html + console/JS error log เก็บไว้ debug เวลาสแครปได้ 0 รายการ"""
     try:
         await page.screenshot(path=os.path.join(DEBUG_DIR, f"{name}.png"), full_page=True)
         html = await page.content()
         with open(os.path.join(DEBUG_DIR, f"{name}.html"), "w", encoding="utf-8") as f:
             f.write(html)
-        print(f"🪲 บันทึกไฟล์ debug แล้ว: {name}.png / {name}.html")
+        if console_log:
+            with open(os.path.join(DEBUG_DIR, f"{name}_console.txt"), "w", encoding="utf-8") as f:
+                f.write("\n".join(console_log) if console_log else "(ไม่มี console log)")
+        print(f"🪲 บันทึกไฟล์ debug แล้ว: {name}.png / {name}.html / {name}_console.txt")
     except Exception as e:
         print(f"⚠️ บันทึก debug ไม่สำเร็จ: {e}")
+
+
+def attach_console_logger(page):
+    """ติดตาม console message และ JS error ทั้งหมดของหน้านี้ คืน list ที่จะถูกเติมเรื่อยๆ
+    ใช้เพื่อ debug ว่าทำไมหน้าถึง render ไม่ได้ (error อะไรที่เกิดขึ้นจริงในเบราว์เซอร์)"""
+    log = []
+
+    def on_console(msg):
+        try:
+            log.append(f"[console:{msg.type}] {msg.text}")
+        except Exception:
+            pass
+
+    def on_pageerror(exc):
+        log.append(f"[pageerror] {exc}")
+
+    def on_requestfailed(req):
+        try:
+            log.append(f"[requestfailed] {req.method} {req.url} -> {req.failure}")
+        except Exception:
+            pass
+
+    def on_response(resp):
+        try:
+            if resp.status >= 400:
+                log.append(f"[http {resp.status}] {resp.url}")
+        except Exception:
+            pass
+
+    page.on("console", on_console)
+    page.on("pageerror", on_pageerror)
+    page.on("requestfailed", on_requestfailed)
+    page.on("response", on_response)
+    return log
 
 
 # =============================================================================
@@ -215,10 +252,11 @@ async def scrape_ram(page) -> list:
 
     for url in urls:
         print(f"🌐 Scraping RAM: {url}")
+        console_log = attach_console_logger(page)
         ok = await safe_goto(page, url)
         if not ok:
             print(f"   🚫 เปิดหน้านี้ไม่สำเร็จหลังลองหลายครั้ง (ยังเจอหน้า 'ไม่พบสินค้า'): {url}")
-            await save_debug(page, f"ram_{url.rstrip('/').split('/')[-1]}_blocked")
+            await save_debug(page, f"ram_{url.rstrip('/').split('/')[-1]}_blocked", console_log)
             continue
 
         try:
@@ -290,7 +328,7 @@ async def scrape_ram(page) -> list:
 
         print(f"   -> เก็บได้ {found_this_url} รายการจากหน้านี้")
         if found_this_url == 0:
-            await save_debug(page, f"ram_{url.rstrip('/').split('/')[-1]}")
+            await save_debug(page, f"ram_{url.rstrip('/').split('/')[-1]}", console_log)
 
     print(f"✅ Scraped RAM Total: {len(results)} items")
     return results
@@ -301,21 +339,21 @@ async def scrape_ram(page) -> list:
 # =============================================================================
 async def scrape_ssd(page) -> list:
     results = []
-    # หมายเหตุ: URL เดิม (ssd-solid-state-drive, ssd-solid-state-drive/ssd-m-2-nvme,
-    # ssd-solid-state-drive/ssd-sata-2-5-) เป็น slug เก่าที่ Advice เลิกใช้แล้ว - ยืนยันจาก
-    # debug HTML ที่ได้จริง (class="error-message" ของแอพเอง ไม่ใช่การบล็อกแต่อย่างใด)
-    # slug ที่ถูกต้องปัจจุบันคือ solid-state-drive-ssd- ซึ่งลิงก์มาจากหน้าหมวดรวม
-    # https://www.advice.co.th/product/harddisk-storage โดยตรง
+    # ยืนยันแล้วจากการเปิดจริงในเบราว์เซอร์ปกติ: หน้านี้แสดงสินค้า SSD พร้อมราคาได้ถูกต้อง
+    # (ต่างจาก solid-state-drive-ssd- ที่แม้ URL จะถูกต้องแต่ headless render ไม่ขึ้น)
+    # หมายเหตุ: หน้านี้เป็นหมวดรวม "SSD / HARD DISK / STORAGE" อาจมี HDD ปนอยู่ด้วย
+    # จึงต้องกรองด้วย title keyword ที่เจาะจง SSD จริงๆ เท่านั้น (ดู parse_lines_to_item)
     urls = [
-        "https://www.advice.co.th/product/solid-state-drive-ssd-",
+        "https://www.advice.co.th/product/harddisk-storage",
     ]
 
     for url in urls:
         print(f"🌐 Scraping SSD: {url}")
+        console_log = attach_console_logger(page)
         ok = await safe_goto(page, url)
         if not ok:
             print(f"   🚫 เปิดหน้านี้ไม่สำเร็จหลังลองหลายครั้ง (ยังเจอหน้า 'ไม่พบสินค้า'): {url}")
-            await save_debug(page, f"ssd_{url.rstrip('/').split('/')[-1]}_blocked")
+            await save_debug(page, f"ssd_{url.rstrip('/').split('/')[-1]}_blocked", console_log)
             continue
 
         try:
@@ -344,6 +382,14 @@ async def scrape_ssd(page) -> list:
                 continue
 
             title_u = title.upper()
+
+            # กันเคสที่หลุดมาจาก fallback title-guessing แล้วดันเป็น HDD จานหมุนธรรมดา
+            # (หมวดนี้เป็น "SSD / HARD DISK / STORAGE" รวมกัน มี HDD ปนอยู่ด้วย)
+            if not any(k in title_u for k in ['SSD', 'SOLID', 'NVME', 'M.2']):
+                continue
+            if any(k in title_u for k in ['HDD', 'HARDDISK', 'HARD DISK', 'RPM', '7200RPM', '5400RPM']):
+                continue
+
             try:
                 price = float(re.sub(r'[^\d.]', '', price_str))
             except Exception:
@@ -384,7 +430,7 @@ async def scrape_ssd(page) -> list:
 
         print(f"   -> เก็บได้ {found_this_url} รายการจากหน้านี้")
         if found_this_url == 0:
-            await save_debug(page, f"ssd_{url.rstrip('/').split('/')[-1]}")
+            await save_debug(page, f"ssd_{url.rstrip('/').split('/')[-1]}", console_log)
         elif found_this_url >= 20:
             # หน้าหลักได้ข้อมูลเพียงพอแล้ว ข้ามหน้าย่อยที่เหลือ ลดจำนวน request ที่อาจโดนจับได้
             print("   ✅ ได้ข้อมูลเพียงพอจากหน้านี้แล้ว ข้ามหน้าย่อยที่เหลือเพื่อลดความเสี่ยงโดนบล็อก")
