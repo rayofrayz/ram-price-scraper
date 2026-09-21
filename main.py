@@ -1,8 +1,10 @@
 import asyncio
+import json
 import os
 import random
 import re
 import smtplib
+from datetime import datetime, timezone, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
@@ -571,6 +573,391 @@ async def scrape_flash(page) -> list:
 
 
 # =============================================================================
+# 2.9 ฟังก์ชันสร้าง Dashboard (HTML แบบ static ฝังข้อมูลไว้ในตัว สำหรับ host บน GitHub Pages)
+# =============================================================================
+def build_dashboard_html(records: list, generated_at: str) -> str:
+    """
+    สร้างหน้า dashboard HTML แบบ self-contained ไฟล์เดียว ไม่ต้องมี backend
+    ฝังข้อมูลสินค้าทั้งหมดไว้เป็น JSON ในตัวไฟล์เลย เปิดดูได้ทันทีผ่าน GitHub Pages
+    เรียกใหม่ทุกครั้งที่ scraper รัน แล้ว commit ไฟล์นี้กลับเข้า repo (ดูคำแนะนำ workflow)
+    """
+    safe_json = json.dumps(records, ensure_ascii=False).replace("</", "<\\/")
+
+    return """<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Advice Hardware Price Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Kanit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<style>
+  :root {
+    --blue: #0b5ed7;
+    --blue-dark: #073e91;
+    --bg: #f4f7fb;
+    --card: #ffffff;
+    --text: #1a2233;
+    --muted: #66738f;
+    --border: #e3e8f0;
+    --ram: #0b5ed7;
+    --ssd: #16a37a;
+    --flash: #e8792c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: 'Kanit', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+  }
+  header {
+    background: linear-gradient(135deg, var(--blue-dark), var(--blue));
+    color: #fff;
+    padding: 28px 24px;
+  }
+  header h1 { margin: 0 0 4px 0; font-size: 24px; font-weight: 600; }
+  header p { margin: 0; opacity: 0.85; font-size: 14px; }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 24px; }
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 14px;
+    margin-bottom: 24px;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 18px;
+  }
+  .card .label { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  .card .value { font-size: 22px; font-weight: 600; }
+  .card .sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 18px;
+    flex-wrap: wrap;
+  }
+  .tab-btn {
+    border: 1px solid var(--border);
+    background: #fff;
+    padding: 8px 16px;
+    border-radius: 999px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 14px;
+    color: var(--text);
+    transition: all .15s;
+  }
+  .tab-btn.active { background: var(--blue); color: #fff; border-color: var(--blue); }
+  .panel {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 18px;
+    margin-bottom: 20px;
+  }
+  .panel h2 { margin: 0 0 14px 0; font-size: 16px; font-weight: 600; }
+  .chart-wrap { position: relative; height: 320px; }
+  .controls {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 14px;
+  }
+  .controls input, .controls select {
+    font-family: inherit;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 14px;
+    background: #fff;
+  }
+  .controls input { flex: 1; min-width: 180px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; cursor: pointer; user-select: none; white-space: nowrap; }
+  th:hover { color: var(--blue); }
+  tr:hover td { background: #f8fafd; }
+  .badge {
+    display: inline-block;
+    padding: 2px 9px;
+    border-radius: 999px;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: #fff;
+  }
+  .badge.RAM { background: var(--ram); }
+  .badge.SSD { background: var(--ssd); }
+  .badge.FLASH { background: var(--flash); }
+  .price { font-weight: 600; white-space: nowrap; }
+  .pager {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 12px;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .pager button {
+    border: 1px solid var(--border);
+    background: #fff;
+    border-radius: 6px;
+    padding: 5px 12px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .pager button:disabled { opacity: 0.4; cursor: default; }
+  .empty-note { text-align: center; padding: 30px; color: var(--muted); }
+  footer { text-align: center; padding: 20px; color: var(--muted); font-size: 12.5px; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0f1420; --card:#171e2e; --text:#e8ecf5; --muted:#93a0bd; --border:#2a3348; }
+    .controls input, .controls select, .tab-btn { background:#1c2436; color:var(--text); }
+    tr:hover td { background: #1c2436; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>📊 Advice Hardware Price Dashboard</h1>
+  <p>RAM · SSD · Memory Card / Flash Drive — อัปเดตล่าสุด __GENERATED_AT__</p>
+</header>
+
+<div class="wrap">
+
+  <div class="cards" id="summaryCards"></div>
+
+  <div class="tabs" id="categoryTabs"></div>
+
+  <div class="panel">
+    <h2 id="chartTitle">ราคาเฉลี่ยตามแบรนด์</h2>
+    <div class="chart-wrap"><canvas id="brandChart"></canvas></div>
+  </div>
+
+  <div class="panel">
+    <h2>รายการสินค้าทั้งหมด</h2>
+    <div class="controls">
+      <input type="text" id="searchInput" placeholder="ค้นหาชื่อสินค้า หรือแบรนด์...">
+      <select id="brandFilter"><option value="">ทุกแบรนด์</option></select>
+    </div>
+    <div id="tableWrap"></div>
+    <div class="pager">
+      <span id="pageInfo"></span>
+      <div>
+        <button id="prevPage">← ก่อนหน้า</button>
+        <button id="nextPage">ถัดไป →</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<footer>สร้างโดย Advice Price Scraper · ข้อมูลดึงจาก advice.co.th อัตโนมัติทุกวัน</footer>
+
+<script>
+const DATA = __DATA_JSON__;
+
+let currentCategory = 'ALL';
+let currentPage = 1;
+const PAGE_SIZE = 25;
+let sortKey = 'Price';
+let sortDir = 1;
+let chartInstance = null;
+
+const CAT_LABELS = { ALL: 'ทั้งหมด', RAM: 'RAM', SSD: 'SSD', FLASH: 'Flash / Memory' };
+const CAT_COLORS = { RAM: '#0b5ed7', SSD: '#16a37a', FLASH: '#e8792c' };
+
+function fmtPrice(n) {
+  return '฿' + Number(n).toLocaleString('th-TH', { maximumFractionDigits: 0 });
+}
+
+function filteredData() {
+  let rows = currentCategory === 'ALL' ? DATA : DATA.filter(r => r.Category === currentCategory);
+  const q = document.getElementById('searchInput').value.trim().toLowerCase();
+  if (q) {
+    rows = rows.filter(r =>
+      (r.Model_Raw || '').toLowerCase().includes(q) ||
+      (r.Brand || '').toLowerCase().includes(q)
+    );
+  }
+  const brand = document.getElementById('brandFilter').value;
+  if (brand) rows = rows.filter(r => r.Brand === brand);
+  return rows;
+}
+
+function renderSummary() {
+  const cats = ['ALL', 'RAM', 'SSD', 'FLASH'];
+  const wrap = document.getElementById('summaryCards');
+  wrap.innerHTML = '';
+  cats.forEach(cat => {
+    const rows = cat === 'ALL' ? DATA : DATA.filter(r => r.Category === cat);
+    if (!rows.length && cat !== 'ALL') return;
+    const prices = rows.map(r => r.Price);
+    const avg = prices.length ? prices.reduce((a, b) => a + b, 0) / prices.length : 0;
+    const min = prices.length ? Math.min(...prices) : 0;
+    const div = document.createElement('div');
+    div.className = 'card';
+    div.innerHTML = `
+      <div class="label">${CAT_LABELS[cat]}</div>
+      <div class="value">${rows.length.toLocaleString()} รายการ</div>
+      <div class="sub">เฉลี่ย ${fmtPrice(avg)} · ต่ำสุด ${fmtPrice(min)}</div>
+    `;
+    wrap.appendChild(div);
+  });
+}
+
+function renderTabs() {
+  const cats = ['ALL', ...Array.from(new Set(DATA.map(r => r.Category)))];
+  const wrap = document.getElementById('categoryTabs');
+  wrap.innerHTML = '';
+  cats.forEach(cat => {
+    const btn = document.createElement('button');
+    btn.className = 'tab-btn' + (cat === currentCategory ? ' active' : '');
+    btn.textContent = CAT_LABELS[cat] || cat;
+    btn.onclick = () => {
+      currentCategory = cat;
+      currentPage = 1;
+      populateBrandFilter();
+      renderAll();
+    };
+    wrap.appendChild(btn);
+  });
+}
+
+function populateBrandFilter() {
+  const rows = currentCategory === 'ALL' ? DATA : DATA.filter(r => r.Category === currentCategory);
+  const brands = Array.from(new Set(rows.map(r => r.Brand))).sort();
+  const sel = document.getElementById('brandFilter');
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">ทุกแบรนด์</option>' + brands.map(b => `<option value="${b}">${b}</option>`).join('');
+  if (brands.includes(prev)) sel.value = prev;
+}
+
+function renderChart() {
+  const rows = currentCategory === 'ALL' ? DATA : DATA.filter(r => r.Category === currentCategory);
+  const byBrand = {};
+  rows.forEach(r => {
+    if (!byBrand[r.Brand]) byBrand[r.Brand] = [];
+    byBrand[r.Brand].push(r.Price);
+  });
+  let brands = Object.keys(byBrand).map(b => ({
+    brand: b,
+    avg: byBrand[b].reduce((a, c) => a + c, 0) / byBrand[b].length,
+    count: byBrand[b].length,
+  }));
+  brands.sort((a, b) => b.count - a.count);
+  brands = brands.slice(0, 12).sort((a, b) => a.avg - b.avg);
+
+  document.getElementById('chartTitle').textContent =
+    'ราคาเฉลี่ยตามแบรนด์ — ' + CAT_LABELS[currentCategory];
+
+  const ctx = document.getElementById('brandChart');
+  const color = currentCategory === 'ALL' ? '#0b5ed7' : CAT_COLORS[currentCategory];
+  if (chartInstance) chartInstance.destroy();
+  chartInstance = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: brands.map(b => b.brand + ' (' + b.count + ')'),
+      datasets: [{
+        label: 'ราคาเฉลี่ย (บาท)',
+        data: brands.map(b => Math.round(b.avg)),
+        backgroundColor: color,
+        borderRadius: 6,
+      }]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { callback: v => '฿' + v.toLocaleString() } }
+      }
+    }
+  });
+}
+
+function renderTable() {
+  let rows = filteredData();
+  rows = rows.slice().sort((a, b) => {
+    let va = a[sortKey], vb = b[sortKey];
+    if (typeof va === 'string') { va = va.toLowerCase(); vb = (vb || '').toLowerCase(); }
+    if (va < vb) return -1 * sortDir;
+    if (va > vb) return 1 * sortDir;
+    return 0;
+  });
+
+  const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  if (currentPage > totalPages) currentPage = totalPages;
+  const pageRows = rows.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+
+  const wrap = document.getElementById('tableWrap');
+  if (!rows.length) {
+    wrap.innerHTML = '<div class="empty-note">ไม่พบสินค้าตรงเงื่อนไข</div>';
+  } else {
+    const cols = [
+      ['Category', 'หมวด'], ['Brand', 'แบรนด์'], ['Model_Raw', 'ชื่อสินค้า'],
+      ['Form_Factor', 'ประเภท'], ['Tech_Spec', 'สเปค'], ['Capacity', 'ความจุ'], ['Price', 'ราคา'],
+    ];
+    let html = '<table><thead><tr>';
+    cols.forEach(([key, label]) => {
+      const arrow = sortKey === key ? (sortDir === 1 ? ' ▲' : ' ▼') : '';
+      html += `<th data-key="${key}">${label}${arrow}</th>`;
+    });
+    html += '</tr></thead><tbody>';
+    pageRows.forEach(r => {
+      html += '<tr>';
+      html += `<td><span class="badge ${r.Category}">${r.Category}</span></td>`;
+      html += `<td>${r.Brand}</td>`;
+      html += `<td>${r.Model_Raw}</td>`;
+      html += `<td>${r.Form_Factor || ''}</td>`;
+      html += `<td>${r.Tech_Spec || ''}</td>`;
+      html += `<td>${r.Capacity || ''}</td>`;
+      html += `<td class="price">${fmtPrice(r.Price)}</td>`;
+      html += '</tr>';
+    });
+    html += '</tbody></table>';
+    wrap.innerHTML = html;
+    wrap.querySelectorAll('th').forEach(th => {
+      th.onclick = () => {
+        const key = th.dataset.key;
+        if (sortKey === key) sortDir *= -1; else { sortKey = key; sortDir = 1; }
+        renderTable();
+      };
+    });
+  }
+
+  document.getElementById('pageInfo').textContent =
+    `หน้า ${currentPage}/${totalPages} · ${rows.length.toLocaleString()} รายการ`;
+  document.getElementById('prevPage').disabled = currentPage <= 1;
+  document.getElementById('nextPage').disabled = currentPage >= totalPages;
+}
+
+function renderAll() {
+  renderTabs();
+  renderChart();
+  renderTable();
+}
+
+document.getElementById('searchInput').addEventListener('input', () => { currentPage = 1; renderTable(); });
+document.getElementById('brandFilter').addEventListener('change', () => { currentPage = 1; renderTable(); });
+document.getElementById('prevPage').addEventListener('click', () => { if (currentPage > 1) { currentPage--; renderTable(); } });
+document.getElementById('nextPage').addEventListener('click', () => { currentPage++; renderTable(); });
+
+renderSummary();
+populateBrandFilter();
+renderAll();
+</script>
+</body>
+</html>
+""".replace("__DATA_JSON__", safe_json).replace("__GENERATED_AT__", generated_at)
+
+
+# =============================================================================
 # 3. ฟังก์ชันส่ง Email
 # =============================================================================
 def send_email_with_excel(filepath, status_msg="", extra_attachments=None):
@@ -692,6 +1079,15 @@ async def main():
                 f"ดึงสำเร็จรวม {len(df)} รายการ "
                 f"(RAM: {len(ram_df)}, SSD: {len(ssd_df)}, Flash/Memory: {len(flash_df)})"
             )
+
+            # สร้าง dashboard HTML (ฝังข้อมูลในตัว) สำหรับ host บน GitHub Pages
+            th_tz = timezone(timedelta(hours=7))
+            generated_at = datetime.now(th_tz).strftime("%d/%m/%Y %H:%M น.")
+            os.makedirs("docs", exist_ok=True)
+            dashboard_html = build_dashboard_html(df.to_dict("records"), generated_at)
+            with open(os.path.join("docs", "index.html"), "w", encoding="utf-8") as f:
+                f.write(dashboard_html)
+            print("📊 สร้าง docs/index.html (dashboard) เรียบร้อยแล้ว")
         else:
             df_empty = pd.DataFrame([{"Message": "No data matching criteria found"}])
             df_empty.to_excel(file_name, index=False)
